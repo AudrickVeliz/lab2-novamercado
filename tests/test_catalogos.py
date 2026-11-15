@@ -6,6 +6,7 @@ from novamercado.catalogos import (
     CARPETA_PREDETERMINADA,
     VARIABLE_CARPETA,
     CatalogoInvalido,
+    cargar_historico,
     cargar_catalogos,
     carpeta_datos,
 )
@@ -149,3 +150,37 @@ def test_los_catalogos_publicados_son_validos():
     assert catalogos.ids_tiendas == set(range(1, 11))
     assert len(catalogos.ids_familias) == 12
     assert set(catalogos.costos.index) == catalogos.ids_familias
+
+
+HISTORICO = "fecha,tienda_id,familia_id,ventas,en_promocion\n2024-03-02,1,lacteos,80,0\n2024-03-01,2,abarrotes,599,3\n"
+
+
+def escribir_historico(carpeta, contenido=HISTORICO):
+    (escribir(carpeta) / "historico_ventas.csv").write_text(contenido, encoding="utf-8")
+    return carpeta
+
+
+def test_carga_el_historico_ordenado_y_con_tipos(tmp_path):
+    carpeta = escribir_historico(tmp_path)
+    historico = cargar_historico(cargar_catalogos(carpeta), carpeta)
+
+    assert list(historico.columns) == ["fecha", "tienda_id", "familia_id", "ventas", "en_promocion"]
+    assert historico["tienda_id"].tolist() == [2, 1]
+    assert historico["ventas"].tolist() == [599, 80]
+    assert str(historico["fecha"].dtype).startswith("datetime64")
+
+
+@pytest.mark.parametrize(
+    ("fila", "mensaje"),
+    [
+        ("2024-03-03,1,lacteos,-5,0", "ventas debe ser un entero"),
+        ("2024-03-03,9,lacteos,5,0", "tiendas que no están"),
+        ("2024-03-03,1,pan,5,0", "familias que no están"),
+        ("2024-03-02,1,lacteos,81,0", "repetidas"),
+        ("03/03/2024,1,lacteos,5,0", "AAAA-MM-DD"),
+    ],
+)
+def test_historico_invalido_falla(tmp_path, fila, mensaje):
+    carpeta = escribir_historico(tmp_path, HISTORICO + fila + "\n")
+    with pytest.raises(CatalogoInvalido, match=mensaje):
+        cargar_historico(cargar_catalogos(carpeta), carpeta)

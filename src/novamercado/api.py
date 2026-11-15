@@ -15,13 +15,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-import pandas as pd
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from novamercado.catalogos import CatalogoInvalido, cargar_catalogos, carpeta_datos
+from novamercado.catalogos import cargar_catalogos, cargar_historico, carpeta_datos
 from novamercado.contrato import (
     PrediccionFamilia,
     RespuestaObservacion,
@@ -203,11 +202,7 @@ def _fallas(chequeos: Mapping[str, Callable[[], None]]) -> list[str]:
 
 def _cargar_referencia(carpeta: Path) -> Referencia:
     catalogos = cargar_catalogos(carpeta)
-    ruta = carpeta / "historico_ventas.csv"
-    if not ruta.is_file():
-        raise CatalogoInvalido(f"No se encontró {ruta}")
-    historico = pd.read_csv(ruta, usecols=["tienda_id", "familia_id", "ventas"])
-    return Referencia(catalogos, maximos_historicos(historico))
+    return Referencia(catalogos, maximos_historicos(cargar_historico(catalogos, carpeta)))
 
 
 def app_desde_entorno() -> FastAPI:

@@ -25,6 +25,7 @@ COLUMNAS = {
     "familias.csv": ["familia_id", "nombre"],
     "costos.csv": ["familia_id", "costo_faltante", "costo_sobrante"],
     "feriados.csv": ["fecha", "nombre", "tipo", "ambito"],
+    "historico_ventas.csv": ["fecha", "tienda_id", "familia_id", "ventas", "en_promocion"],
 }
 
 
@@ -67,6 +68,24 @@ def cargar_catalogos(carpeta: str | Path | None = None) -> Catalogos:
         costos=_costos(_leer(raiz, "costos.csv"), familias),
         feriados=_feriados(_leer(raiz, "feriados.csv")),
     )
+
+
+def cargar_historico(catalogos: Catalogos, carpeta: str | Path | None = None) -> pd.DataFrame:
+    """Lee historico_ventas.csv: una venta entera y no negativa por fecha, tienda y familia conocidas."""
+    archivo = "historico_ventas.csv"
+    tabla = _leer(carpeta_datos(carpeta), archivo)
+    tabla["fecha"] = _fechas(tabla["fecha"], archivo, "fecha")
+    for columna in ("tienda_id", "ventas", "en_promocion"):
+        tabla[columna] = _enteros(tabla[columna], archivo, columna)
+    if desconocidas := sorted(set(tabla["tienda_id"]) - catalogos.ids_tiendas):
+        raise CatalogoInvalido(f"{archivo}: tiendas que no están en tiendas.csv: {desconocidas}")
+    if desconocidas := sorted(set(tabla["familia_id"]) - catalogos.ids_familias):
+        raise CatalogoInvalido(f"{archivo}: familias que no están en familias.csv: {desconocidas}")
+    repetidas = tabla.duplicated(["fecha", "tienda_id", "familia_id"])
+    if repetidas.any():
+        raise CatalogoInvalido(f"{archivo}: fecha, tienda y familia repetidas en las filas {_filas(repetidas)[:10]}")
+    columnas = COLUMNAS[archivo]
+    return tabla[columnas].sort_values(columnas[:3]).reset_index(drop=True)
 
 
 def _leer(raiz: Path, archivo: str) -> pd.DataFrame:
