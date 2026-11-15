@@ -13,9 +13,6 @@ data/**
 .env
 .dvc/config.local
 
-# Remoto local de DVC: contiene datos, nunca va en Git.
-/dvc-remote/
-
 # MLflow local (fuera de los contenedores)
 mlruns/
 mlartifacts/

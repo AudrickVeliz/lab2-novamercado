@@ -1,5 +1,5 @@
 [core]
     analytics = false
-    remote = local
-['remote "local"']
-    url = ../dvc-remote
+    remote = dagshub
+['remote "dagshub"']
+    url = https://dagshub.com/AudrickVeliz/lab2-novamercado.dvc
