@@ -23,7 +23,7 @@ class _Estricto(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
 
 
-# --- Solicitudes ya limpias -------------------------------------------------
+# Solicitudes ya limpias
 
 
 class FamiliaPromocion(_Estricto):
@@ -49,7 +49,7 @@ class SolicitudObservacion(_Estricto):
     ventas: tuple[VentaFamilia, ...]
 
 
-# --- Calidad ----------------------------------------------------------------
+# Calidad
 
 
 class ObservacionCalidad(BaseModel):
@@ -83,7 +83,7 @@ class Calidad(BaseModel):
         return self
 
 
-# --- Respuestas -------------------------------------------------------------
+# Respuestas
 
 
 class PrediccionFamilia(BaseModel):

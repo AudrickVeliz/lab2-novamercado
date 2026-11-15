@@ -26,7 +26,7 @@ def ventas(resultado):
     return {v.familia_id: v.ventas for v in resultado.solicitud.ventas}
 
 
-# --- Solicitud válida -------------------------------------------------------
+# Solicitud válida
 
 
 def test_prediccion_valida_queda_ok(prediccion, referencia):
@@ -52,7 +52,7 @@ def test_rechaza_un_cuerpo_que_no_es_objeto(cuerpo, referencia):
         limpiar_prediccion(cuerpo, referencia)
 
 
-# --- E01: tienda ------------------------------------------------------------
+# E01: tienda
 
 
 @pytest.mark.parametrize("valor", ["5", "T05", "tienda 5", " 5 ", 5.0, "05", "#5"])
@@ -78,7 +78,7 @@ def test_e01_rechaza_tienda_inexistente(prediccion, referencia):
         limpiar_prediccion(prediccion, referencia)
 
 
-# --- E02: familia -----------------------------------------------------------
+# E02: familia
 
 
 @pytest.mark.parametrize(
@@ -117,7 +117,7 @@ def test_e02_no_adivina_errores_de_tipeo(prediccion, referencia):
     assert ("familias", "advertir") in acciones(r)
 
 
-# --- E03: promoción ---------------------------------------------------------
+# E03: promoción
 
 
 @pytest.mark.parametrize("valor", ["3", 3.0, " 3 ", "3,0"])
@@ -146,7 +146,7 @@ def test_e03_promocion_ausente_asume_cero(prediccion, referencia):
     assert acciones(r) == [("familias[3]", "advertir")]
 
 
-# --- E04: fecha -------------------------------------------------------------
+# E04: fecha
 
 
 @pytest.mark.parametrize(
@@ -212,7 +212,7 @@ def test_no_usa_el_reloj_del_sistema(prediccion, referencia):
     assert limpiar_prediccion(prediccion, referencia).calidad.estado == "ok"
 
 
-# --- E05: familias faltantes ------------------------------------------------
+# E05: familias faltantes
 
 
 def test_e05_completa_las_familias_faltantes(prediccion, referencia):
@@ -232,7 +232,7 @@ def test_e05_lista_vacia_completa_todas(prediccion, referencia):
     assert r.calidad.estado == "advertencia"
 
 
-# --- E06: familia repetida --------------------------------------------------
+# E06: familia repetida
 
 
 def test_e06_repetida_con_mismos_valores_se_repara(prediccion, referencia):
@@ -260,7 +260,7 @@ def test_e06_detecta_repetidas_escritas_de_otra_forma(prediccion, referencia):
     assert r.calidad.estado == "advertencia"
 
 
-# --- E07: nombres de campos -------------------------------------------------
+# E07: nombres de campos
 
 
 @pytest.mark.parametrize("nombre", ["tienda", "Tienda_ID", "id_tienda", "store_id", "tiendaId"])
@@ -323,7 +323,7 @@ def test_rechaza_familias_que_no_son_lista(prediccion, referencia):
         limpiar_prediccion(prediccion, referencia)
 
 
-# --- E08: ventas negativas --------------------------------------------------
+# E08: ventas negativas
 
 
 def test_e08_ventas_negativas_no_se_guardan(observacion, referencia):
@@ -335,7 +335,7 @@ def test_e08_ventas_negativas_no_se_guardan(observacion, referencia):
     assert acciones(r) == [("ventas[1].ventas", "advertir")]
 
 
-# --- E10: formato de números ------------------------------------------------
+# E10: formato de números
 
 
 @pytest.mark.parametrize(
@@ -369,7 +369,7 @@ def test_interpretar_numero(texto, numero):
     assert interpretar_numero(texto) == numero
 
 
-# --- Otras reglas de las observaciones --------------------------------------
+# Otras reglas de las observaciones
 
 
 def test_observacion_repetida_identica_en_la_misma_solicitud_se_repara(observacion, referencia):
@@ -435,7 +435,7 @@ def test_observacion_rechaza_fecha_anterior_a_la_apertura(observacion, referenci
         limpiar_observacion(observacion, referencia)
 
 
-# --- Ejemplos publicados ----------------------------------------------------
+# Ejemplos publicados
 
 EJEMPLOS = Path(__file__).resolve().parents[1] / "data" / "publicados" / "ejemplos"
 

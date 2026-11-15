@@ -19,6 +19,7 @@ import re
 import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import Any, Generic, TypeVar
 
 import pandas as pd
@@ -56,6 +57,16 @@ class Referencia:
     # (tienda_id, familia_id) -> máximo histórico de ventas. Vacío: no se revisan atípicos.
     maximos: Mapping[tuple[int, str], int] = field(default_factory=dict)
 
+    @cached_property
+    def indice_familias(self) -> dict[str, str | None]:
+        """clave → familia_id, a partir del id y del nombre. None marca una clave ambigua."""
+        indice: dict[str, str | None] = {}
+        for familia_id, fila in self.catalogos.familias.iterrows():
+            for texto in (familia_id, fila["nombre"]):
+                k = clave(str(texto))
+                indice[k] = familia_id if indice.get(k, familia_id) == familia_id else None
+        return indice
+
 
 @dataclass(frozen=True)
 class Resultado(Generic[T]):
@@ -75,7 +86,7 @@ def maximos_historicos(historico: pd.DataFrame) -> dict[tuple[int, str], int]:
     return {(int(t), str(f)): int(v) for (t, f), v in maximos.items()}
 
 
-# --- Nombres de campos (E07) ------------------------------------------------
+# Nombres de campos (E07)
 
 _ALIAS_TIENDA = {"tiendaid", "tienda", "idtienda", "store", "storeid", "storenbr",
                  "codigotienda", "codtienda", "sucursal", "sucursalid"}
@@ -118,8 +129,6 @@ class _Campo:
 
 
 class _Registro:
-    """Acumula las observaciones de calidad y los campos ignorados."""
-
     def __init__(self) -> None:
         self.observaciones: list[ObservacionCalidad] = []
         self.ignorados: list[str] = []
@@ -169,13 +178,13 @@ def _resolver_campos(
     return resueltos
 
 
-def _requerido(campos: dict[str, _Campo], nombre: str, base: str = "") -> _Campo:
+def _requerido(campos: dict[str, _Campo], nombre: str) -> _Campo:
     if nombre not in campos:
-        raise SolicitudRechazada(f"Falta el campo obligatorio '{_ruta(base, nombre)}'")
+        raise SolicitudRechazada(f"Falta el campo obligatorio '{nombre}'")
     return campos[nombre]
 
 
-# --- Números (E03, E08, E10) ------------------------------------------------
+# Números (E03, E08, E10)
 
 
 def _miles_validos(texto: str, separador: str) -> bool:
@@ -235,16 +244,20 @@ def _formato(valor: Any) -> str:
     return f"'{valor}'" if isinstance(valor, str) else repr(valor)
 
 
+def _es_entero_json(valor: Any) -> bool:
+    # bool es subclase de int en Python, pero en JSON true no es un número.
+    return isinstance(valor, int) and not isinstance(valor, bool)
+
+
 def _entero_reparado(valor: Any) -> tuple[int | None, bool]:
     """(entero, se_reinterpretó). None si no es un número entero."""
     numero = interpretar_numero(valor)
-    if numero is None or not float(numero).is_integer():
+    if numero is None or not numero.is_integer():
         return None, False
-    reinterpretado = not (isinstance(valor, int) and not isinstance(valor, bool))
-    return int(numero), reinterpretado
+    return int(numero), not _es_entero_json(valor)
 
 
-# --- Tienda (E01) -----------------------------------------------------------
+# Tienda (E01)
 
 
 def _tienda(campo: _Campo, referencia: Referencia, registro: _Registro) -> int:
@@ -264,7 +277,7 @@ def _tienda(campo: _Campo, referencia: Referencia, registro: _Registro) -> int:
     return tienda
 
 
-# --- Fecha (E04) ------------------------------------------------------------
+# Fecha (E04)
 
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
 _ISO_CON_HORA = re.compile(r"(\d{4})-(\d{2})-(\d{2})[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?")
@@ -284,40 +297,27 @@ def _fecha(campo: _Campo, registro: _Registro) -> dt.date:
     if not isinstance(valor, str):
         raise SolicitudRechazada(f"'{campo.ruta}' debe ser una fecha AAAA-MM-DD: {_formato(valor)}")
     texto = valor.strip()
+    ambigua, nota = False, ""
 
-    if m := _ISO.fullmatch(texto):
-        fecha = _crear_fecha(*map(int, m.groups()), campo)
-        if texto != valor:
-            registro.reparar(campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()}")
-        return fecha
-    if m := _ISO_CON_HORA.fullmatch(texto):
-        fecha = _crear_fecha(*map(int, m.groups()[:3]), campo)
-        registro.reparar(campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()}")
-        return fecha
-    if m := _ANIO_PRIMERO.fullmatch(texto):
-        fecha = _crear_fecha(*map(int, m.groups()), campo)
-        registro.reparar(campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()}")
-        return fecha
-    if m := _ANIO_AL_FINAL.fullmatch(texto):
+    if m := _ISO.fullmatch(texto) or _ISO_CON_HORA.fullmatch(texto) or _ANIO_PRIMERO.fullmatch(texto):
+        anio, mes, dia = map(int, m.groups()[:3])
+    elif m := _ANIO_AL_FINAL.fullmatch(texto):
         a, b, anio = map(int, m.groups())
         if a > 12 and b > 12:
             raise SolicitudRechazada(f"'{campo.ruta}' no es una fecha válida: {_formato(valor)}")
-        if a > 12 or a == b:
-            fecha = _crear_fecha(anio, b, a, campo)
-            registro.reparar(campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()}")
-        elif b > 12:
-            fecha = _crear_fecha(anio, a, b, campo)
-            registro.reparar(
-                campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()} (mes primero)"
-            )
-        else:
-            fecha = _crear_fecha(anio, b, a, campo)
-            registro.advertir(
-                campo.ruta,
-                f"{_formato(valor)} es ambigua; se asumió día primero: {fecha.isoformat()}",
-            )
-        return fecha
-    raise SolicitudRechazada(f"'{campo.ruta}' debe ser una fecha AAAA-MM-DD: {_formato(valor)}")
+        # Día primero, la convención en Guatemala, salvo que el segundo número no pueda ser mes.
+        dia, mes = (b, a) if b > 12 else (a, b)
+        nota = " (mes primero)" if b > 12 else ""
+        ambigua = a <= 12 and b <= 12 and a != b
+    else:
+        raise SolicitudRechazada(f"'{campo.ruta}' debe ser una fecha AAAA-MM-DD: {_formato(valor)}")
+
+    fecha = _crear_fecha(anio, mes, dia, campo)
+    if ambigua:
+        registro.advertir(campo.ruta, f"{_formato(valor)} es ambigua; se asumió día primero: {fecha.isoformat()}")
+    elif valor != fecha.isoformat():
+        registro.reparar(campo.ruta, f"{_formato(valor)} se interpretó como {fecha.isoformat()}{nota}")
+    return fecha
 
 
 def _validar_apertura(tienda: int, fecha: dt.date, referencia: Referencia) -> None:
@@ -328,17 +328,7 @@ def _validar_apertura(tienda: int, fecha: dt.date, referencia: Referencia) -> No
         )
 
 
-# --- Familias (E02) ---------------------------------------------------------
-
-
-def _indice_familias(catalogos: Catalogos) -> dict[str, str | None]:
-    """clave → familia_id, a partir del id y del nombre. None marca una clave ambigua."""
-    indice: dict[str, str | None] = {}
-    for familia_id, fila in catalogos.familias.iterrows():
-        for texto in (familia_id, fila["nombre"]):
-            k = clave(str(texto))
-            indice[k] = familia_id if indice.get(k, familia_id) == familia_id else None
-    return indice
+# Familias (E02)
 
 
 def _familia(campos: dict[str, _Campo], ruta_item: str, referencia: Referencia, registro: _Registro) -> str | None:
@@ -349,7 +339,7 @@ def _familia(campos: dict[str, _Campo], ruta_item: str, referencia: Referencia, 
     valor = campo.valor
     if isinstance(valor, str) and valor in referencia.catalogos.ids_familias:
         return valor
-    familia = _indice_familias(referencia.catalogos).get(clave(valor)) if isinstance(valor, str) else None
+    familia = referencia.indice_familias.get(clave(valor)) if isinstance(valor, str) else None
     if familia is None:
         registro.advertir(campo.ruta, f"la familia {_formato(valor)} no se reconoce; se omitió")
         return None
@@ -376,7 +366,7 @@ def _objeto(crudo: Any) -> dict:
     return crudo
 
 
-# --- Predicción -------------------------------------------------------------
+# Predicción
 
 
 def _promocion(campos: dict[str, _Campo], ruta_item: str, registro: _Registro) -> int:
@@ -438,7 +428,7 @@ def limpiar_prediccion(crudo: Any, referencia: Referencia) -> Resultado[Solicitu
     return Resultado(solicitud, registro.observaciones, registro.ignorados)
 
 
-# --- Observaciones ----------------------------------------------------------
+# Observaciones
 
 
 def _ventas(campos: dict[str, _Campo], ruta_item: str, familia: str, registro: _Registro) -> int | None:
@@ -447,21 +437,18 @@ def _ventas(campos: dict[str, _Campo], ruta_item: str, familia: str, registro: _
         registro.advertir(ruta_item, f"no trae ventas para '{familia}'; no se guardó")
         return None
     numero = interpretar_numero(campo.valor)
-    if numero is None:
-        registro.advertir(campo.ruta, f"ventas ilegibles ({_formato(campo.valor)}) para '{familia}'; no se guardó")
+    problema = (
+        "ilegibles" if numero is None
+        else "negativas" if numero < 0
+        else "no enteras" if not numero.is_integer()
+        else None
+    )
+    if problema:
+        registro.advertir(campo.ruta, f"ventas {problema} ({_formato(campo.valor)}) para '{familia}'; no se guardó")
         return None
-    if numero < 0:
-        registro.advertir(campo.ruta, f"ventas negativas ({_formato(campo.valor)}) para '{familia}'; no se guardó")
-        return None
-    if not numero.is_integer():
-        registro.advertir(
-            campo.ruta, f"ventas no enteras ({_formato(campo.valor)}) para '{familia}'; no se guardó"
-        )
-        return None
-    ventas, reinterpretado = _entero_reparado(campo.valor)
-    if reinterpretado:
-        registro.reparar(campo.ruta, f"{_formato(campo.valor)} se interpretó como {ventas}")
-    return ventas
+    if not _es_entero_json(campo.valor):
+        registro.reparar(campo.ruta, f"{_formato(campo.valor)} se interpretó como {int(numero)}")
+    return int(numero)
 
 
 def limpiar_observacion(crudo: Any, referencia: Referencia) -> Resultado[SolicitudObservacion]:
