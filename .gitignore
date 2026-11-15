@@ -1,0 +1,43 @@
+# Datos y modelos: se versionan con DVC, nunca con Git.
+# Solo se permiten los punteros .dvc y los .gitignore que genera DVC.
+data/**
+!data/**/
+!data/**/*.dvc
+!data/**/.gitignore
+!data/**/.gitkeep
+
+# Enunciado del laboratorio: no forma parte del producto
+/Laboratorio_2_PD_26_c.pdf
+
+# Credenciales y configuración local
+.env
+.dvc/config.local
+
+# Remoto local de DVC: contiene datos, nunca va en Git.
+/dvc-remote/
+
+# MLflow local (fuera de los contenedores)
+mlruns/
+mlartifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+.ipynb_checkpoints/
+
+# Airflow
+logs/
+airflow.cfg
+
+# Sistema y editores
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
