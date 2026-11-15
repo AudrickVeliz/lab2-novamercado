@@ -55,3 +55,68 @@ El producto (API y DAGs) nunca ejecuta DVC.
 | Solo metadatos de linaje, sin snapshot | Para reproducir un modelo habría que reconstruir el dataset desde la BD, que sigue cambiando |
 
 **Justificación:** el snapshot del dataset (~1–2 MB por run) permite reproducir exactamente cada modelo a partir de su run, sin depender del estado actual de la base de datos. Así cada modelo puede reproducirse a partir de su versión de código y de datos.
+
+## D-003: política ante cada tipo de problema en los datos
+
+**Fecha:** 2026-11-15
+
+**Contexto:** los sistemas de las tiendas no son uniformes. El servicio no debe detenerse por datos defectuosos, pero tampoco inventar datos, y debe informar en cada respuesta qué hizo y por qué. Llegarán problemas que no están en el catálogo, así que las reglas deben ser generales.
+
+**Regla general:**
+
+| Política | Cuándo | Efecto |
+|---|---|---|
+| **Reparar** | Hay una sola interpretación posible | Se corrige; `calidad.estado = corregido` |
+| **Advertir** | Se puede responder asumiendo algo | Se responde y se dice qué se asumió; `calidad.estado = advertencia` |
+| **Rechazar** | No se puede responder sin inventar (no se sabe qué tienda, qué fecha, o hay datos en conflicto) | 422 con `detail` |
+
+La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los modelos de Pydantic de `novamercado.contrato` validan después la solicitud ya limpia, de forma estricta. Los nombres de campos y de familias se comparan en una forma normalizada (sin tildes, sin mayúsculas, solo letras y dígitos), y los números y las fechas se interpretan con las mismas reglas en todo el contrato.
+
+**Solicitudes de predicción:**
+
+| Código | Problema | Política | Detalle |
+|---|---|---|---|
+| E01 | Tienda como texto o con prefijo | Reparar | Se extrae un único número (`"T05"`, `"tienda 5"`, `5.0` → 5). Si hay varios números (`"5-7"`) o decimales reales, o si la tienda no existe: **rechazar** |
+| E02 | Familia escrita de otra forma | Reparar | Se compara normalizada contra `familia_id` y contra el nombre de `familias.csv` (`"Frutas y Verduras"` → `frutas_verduras`). No hay coincidencia aproximada: `"lacteo"` no es inequívoco |
+| E02 | Familia no reconocida | Advertir | Se omite; el resto se pronostica. Si era una familia real mal escrita, E05 la completa |
+| E03 | Promoción como texto o decimal entero | Reparar | `"3"`, `2.0`, `"3,0"` → 3 |
+| E03 | Promoción negativa, con decimales reales, ilegible o ausente | Advertir | Se asume 0: la promoción del día solo llega en la solicitud y no hay otro dato |
+| E04 | Fecha ISO con hora, año primero con `/`, o día/mes inequívoco | Reparar | `"2025-11-17T00:00:00"`, `"17/11/2025"`, `"11/17/2025"` (17 no puede ser mes) |
+| E04 | Fecha ambigua (día y mes ≤ 12 y distintos) | Advertir | Se asume día primero, la convención en Guatemala |
+| E04 | Fecha irreconocible o inexistente | Rechazar | `"2025-02-30"`, `"mañana"`, año de dos dígitos |
+| — | Fecha anterior a la apertura de la tienda | Rechazar | La tienda no operaba |
+| — | Fecha posterior al último día de `feriados.csv` | Advertir | Se pronostica sin conocer los feriados |
+| E05 | Faltan familias | Advertir | Se completan las 12 con `en_promocion = 0`: la tienda necesita inventario de todas, y el supuesto queda declarado |
+| E06 | Familia repetida con los mismos valores | Reparar | Se usa una vez |
+| E06 | Familia repetida con promociones distintas | Advertir | Se usa la mayor: subestimar una promoción provoca faltantes, que cuestan más que los sobrantes en 8 de las 12 familias |
+| E07 | Nombre de campo distinto | Reparar | Se reconoce por una lista de alias por campo (`tienda`, `id_tienda`, `store_id`, `promocion`…). Dos campos con el mismo destino y valores distintos: **rechazar**. Falta un campo obligatorio (`tienda_id`, `fecha`, `familias`): **rechazar** |
+| — | Campos desconocidos | Ignorar | No afectan al pronóstico ni a `calidad`; quedan en la solicitud cruda guardada en la BD |
+| — | Elemento de la lista que no es un objeto | Advertir | Se omite |
+| — | Cuerpo que no es un objeto JSON, o `familias` que no es una lista | Rechazar | |
+
+**Observaciones de ventas:**
+
+| Código | Problema | Política | Detalle |
+|---|---|---|---|
+| E08 | Ventas negativas | Advertir | Ese registro **no se guarda**; los demás sí. No se sabe la venta real, y guardar 0 entrenaría el modelo con un dato inventado |
+| E09 | Reenvío idéntico | — | Se responde 200 con `registros_guardados = 0` (lo resuelve la persistencia) |
+| E09 | Reenvío con un valor distinto | Reparar en la BD | Se toma como corrección: cambia el valor vigente, cuenta como modificado y el anterior queda en el historial |
+| E10 | Separador de miles o coma decimal | Reparar | Un separador seguido de exactamente 3 dígitos es de miles (`"1,234"` → 1234); con 1–2 dígitos es decimal (`"812,0"` → 812). Si aparecen punto y coma, el último es el decimal |
+| E10 | Decimal real o número ilegible | Advertir | No se guarda (`"12,5"`): las ventas son unidades enteras |
+| — | Familia repetida en la misma observación | Reparar si los valores son iguales; si no, **advertir** y no guardar esa familia | No se sabe cuál es el correcto |
+| — | Faltan familias | Advertir | Se guardan las recibidas; las faltantes pueden llegar en otro envío |
+| — | Valor atípico (más de 5 veces el máximo histórico de la tienda y la familia) | Advertir | Se guarda: puede ser un cambio real de demanda |
+| — | Tienda, fecha, campos y familias | Igual que en la predicción | |
+
+**Alternativas descartadas:**
+
+| Alternativa | En contra |
+|---|---|
+| Rechazar ante cualquier problema | La tienda se queda sin pronóstico por un detalle; el enunciado pide que el servicio no se detenga |
+| Coincidencia aproximada de familias | Puede adivinar mal en silencio (`"lacteo"` podría ser otra cosa) |
+| Pronosticar solo las familias recibidas (E05) | Las familias faltantes quedan sin cantidad sugerida |
+| Usar la última repetición (E06) | Supone un orden de envío que el contrato no garantiza |
+| Recortar las ventas negativas a 0 (E08) | Inventa un dato que entra al reentrenamiento |
+| Advertir por los campos desconocidos | Muchas respuestas pasarían a advertencia sin que se haya asumido nada |
+
+**Riesgo aceptado:** asumir día primero en una fecha ambigua puede pronosticar el día equivocado; queda advertido en la respuesta. El factor de atípicos (5) es un umbral de criterio que se revisará con los datos de la evaluación.
