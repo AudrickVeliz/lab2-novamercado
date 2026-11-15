@@ -12,6 +12,8 @@ from novamercado.persistencia import (
     VARIABLE_URL,
     BaseDeDatosNoConfigurada,
     correcciones,
+    leer_observaciones,
+    leer_promociones,
     crear_esquema,
     crear_motor,
     metadata,
@@ -207,3 +209,32 @@ def test_e09_dos_envios_simultaneos_no_duplican(motor, observacion, referencia):
 
     assert sum(guardados) == 4
     assert contar(motor, observaciones) == 4
+
+
+def test_lee_las_observaciones_con_filtros(motor, observacion, referencia):
+    guardar(motor, observacion, referencia)
+    observacion["fecha"] = "2025-11-18"
+    guardar(motor, observacion, referencia)
+
+    todas = leer_observaciones(motor)
+    assert len(todas) == 8 and list(todas.columns) == ["fecha", "tienda_id", "familia_id", "ventas"]
+    antes = leer_observaciones(motor, tienda_id=5, antes_de=dt.date(2025, 11, 18))
+    assert set(antes["fecha"].dt.date) == {dt.date(2025, 11, 17)}
+    assert leer_observaciones(motor, tienda_id=1).empty
+
+
+def test_lee_la_promocion_de_la_ultima_prediccion(motor, prediccion, referencia):
+    for promocion in (2, 7):
+        prediccion["familias"][0]["en_promocion"] = promocion
+        resultado = limpiar_prediccion(copy.deepcopy(prediccion), referencia)
+        respuesta = RespuestaPrediccion(
+            tienda_id=5, fecha=dt.date(2025, 11, 17), version_modelo="1",
+            predicciones=[PrediccionFamilia(familia_id=f.familia_id, venta_esperada=1.0, cantidad_sugerida=1)
+                          for f in resultado.solicitud.familias],
+            calidad=resultado.calidad,
+        )
+        registrar_prediccion(motor, prediccion, resultado, respuesta, "m")
+
+    promociones = leer_promociones(motor)
+    assert len(promociones) == 4
+    assert promociones.set_index("familia_id").loc["abarrotes", "en_promocion"] == 7
