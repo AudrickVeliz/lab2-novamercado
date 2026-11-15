@@ -369,6 +369,10 @@ def test_interpretar_numero(texto, numero):
     assert interpretar_numero(texto) == numero
 
 
+def test_interpretar_numero_con_espacio_no_separable():
+    assert interpretar_numero("1" + chr(0xA0) + "234") == 1234.0
+
+
 # Otras reglas de las observaciones
 
 

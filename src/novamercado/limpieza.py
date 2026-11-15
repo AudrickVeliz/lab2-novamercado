@@ -213,7 +213,7 @@ def interpretar_numero(valor: Any) -> float | None:
     if not isinstance(valor, str):
         return None
 
-    texto = re.sub(r"[\s ]", "", valor)
+    texto = re.sub(r"\s", "", valor)
     coincidencia = re.fullmatch(r"([+-]?)(\d[\d.,]*)", texto)
     if not coincidencia or texto[-1] in ".,":
         return None
