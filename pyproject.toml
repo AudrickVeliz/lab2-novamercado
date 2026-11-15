@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "novamercado"
+version = "0.1.0"
+description = "Servicio de pronóstico diario de ventas para NovaMercado"
+requires-python = ">=3.12,<3.13"
+# Versiones exactas, iguales a las restricciones de Airflow 3.3.2: local, CI y
+# contenedores usan las mismas librerías. Cada componente agrega las suyas en su PR.
+dependencies = [
+    "numpy==2.5.3",
+    "pandas==3.0.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.4.2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
