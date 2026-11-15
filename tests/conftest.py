@@ -103,3 +103,20 @@ def generar_historico(dias=180, inicio="2025-03-01", semilla=0):
 @pytest.fixture(scope="session")
 def historico():
     return generar_historico()
+
+
+@pytest.fixture(scope="session")
+def entrenado(historico, catalogos):
+    """(tramos, baseline, gbm) entrenados una sola vez con las ventas sintéticas."""
+    from novamercado.entrenamiento import entrenar, preparar_datos
+
+    return entrenar(preparar_datos(historico), catalogos)
+
+
+@pytest.fixture
+def mlflow_local(tmp_path, monkeypatch):
+    """MLflow sobre SQLite en una carpeta temporal: las pruebas no dependen de un servidor."""
+    monkeypatch.chdir(tmp_path)  # los artefactos van a ./mlruns de la carpeta temporal
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
+    monkeypatch.setenv("MLFLOW_DISABLE_AGENT_HINT", "1")
+    return tmp_path

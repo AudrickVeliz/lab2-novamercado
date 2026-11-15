@@ -130,6 +130,13 @@ def evaluar(
     return metricas(ventas[filas].to_numpy(dtype=float), esperada, sugerida, familias, catalogos)
 
 
+def evaluar_vigente(modelo: ModeloEntrenado, datos: Datos, catalogos: Catalogos, tramos: Tramos) -> dict[str, float]:
+    """Mide al modelo vigente en la misma ventana de validación que los candidatos."""
+    en_validacion = datos.objetivos[datos.objetivos["fecha"] >= tramos.inicio_validacion].reset_index(drop=True)
+    variables = caracteristicas.construir(datos.ventas, en_validacion, catalogos)
+    return evaluar(modelo, variables, en_validacion["ventas"], en_validacion["fecha"], tramos, catalogos)
+
+
 def decidir(baseline: Candidato, gbm: Candidato, costo_vigente: float | None) -> Decision:
     """Criterio de reemplazo: el gradient boosting debe costar menos que el baseline y que el vigente."""
     costo_gbm, costo_base = gbm.metricas["costo"], baseline.metricas["costo"]
