@@ -163,3 +163,39 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 **Justificación:** insertar primero con `ON CONFLICT DO NOTHING` y bloquear la fila existente (`SELECT … FOR UPDATE`) antes de compararla evita que dos envíos simultáneos del mismo registro se dupliquen o se cuenten dos veces. Hay una prueba con cuatro envíos simultáneos. La inserción se detecta con `RETURNING`, porque psycopg reporta `rowcount = -1` en un `INSERT … ON CONFLICT DO NOTHING`.
 
 **Pruebas:** corren contra un PostgreSQL 16.10 real, como servicio en el CI y en un contenedor temporal en local. Sin `NOVAMERCADO_BD_PRUEBAS_URL` se saltan.
+
+## D-005: comportamiento de la API ante la falta de modelo, de base de datos o de datos
+
+**Fecha:** 2026-11-15
+
+**Contexto:** el Anexo fija los endpoints, sus campos y que un rechazo se responde con 422 y `detail`. El enunciado pide además que cada predicción y cada observación queden registradas, que `GET /health` responda 503 mientras no haya un modelo cargado, que el servicio use un modelo nuevo sin reiniciarse, y que las pruebas del contrato no dependan de MLflow.
+
+**Decisión:**
+
+| Situación | Respuesta | Se registra como |
+|---|---|---|
+| Solicitud aceptada | 200 según el Anexo | `ok`, `corregido` o `advertencia` |
+| Datos que no se pueden atender (D-003), cuerpo vacío o JSON inválido (incluidos `NaN` e `Infinity`) | 422 con `detail` en texto | `rechazada` |
+| Sin modelo cargado (`/v1/prediccion`, `/modelo`) | 503 con `detail` | `no_atendida` |
+| El modelo falla al predecir | 503 con `detail` | `no_atendida` |
+| La base del producto no permite registrar | 503 con `detail`: no se responde sin registrar | — |
+| `/health` sin modelo | 503, `estado = degradado` y `motivo` | — |
+| `/health` con alguna dependencia caída | 200, `estado = degradado` y `motivo` | — |
+| Faltan los archivos publicados, un catálogo es inválido o falta `NOVAMERCADO_BD_URL` al arrancar | La API no arranca y el log dice qué revisar | — |
+
+- La API recibe sus dependencias al crearse (`crear_app`): los catálogos, el registro, una función que devuelve el **modelo vigente** y los chequeos de salud. El modelo se consulta en cada solicitud, así que puede cambiar sin reiniciar la API. La versión informada es la del modelo que hizo la predicción.
+- Los endpoints leen el cuerpo crudo y delegan en `novamercado.limpieza`, así el mismo 422 con `detail` en texto cubre tanto el JSON inválido como los datos defectuosos, y la solicitud cruda siempre queda guardada.
+- El carácter NUL se reemplaza antes de guardar el cuerpo, porque JSONB no lo admite.
+- Las observaciones no necesitan modelo: se atienden aunque no haya ninguno cargado.
+- Las dependencias se instalan con las restricciones de Airflow 3.3.2 (`--constraint`), que fijan también las transitivas.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Responder con un baseline fijo mientras no hay modelo | `version_modelo` no correspondería a un modelo del Registry |
+| Predecir aunque no se pueda registrar | Incumple que cada predicción quede guardada |
+| Arrancar en 503 si faltan los datos | El servicio parece vivo pero no puede validar ninguna solicitud |
+| Dejar que FastAPI valide el cuerpo | Su 422 trae una lista de errores en `detail` y la solicitud no quedaría registrada |
+
+**Pruebas:** las del contrato usan un predictor falso y un registro en memoria, así que no dependen de MLflow ni de la base. Una prueba de integración repite el recorrido con el PostgreSQL real.
