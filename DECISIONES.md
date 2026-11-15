@@ -40,7 +40,7 @@ Cada decisión registra su contexto, las alternativas consideradas y su justific
 |---|---|---|
 | Datos de entrada (`data/publicados/`) | DVC + DagsHub | `dvc add` y `dvc push` en desarrollo |
 | Modelos y experimentos | MLflow (Model Registry) | Una versión por modelo registrado; el vigente se identifica con un alias |
-| Linaje de cada modelo | MLflow (run) | Hash de cada archivo publicado, rango de fechas, conteo y hash de las observaciones de la BD usadas, commit del código y parámetros (`mlflow.log_input`), más el dataset de entrenamiento en parquet como artefacto |
+| Linaje de cada modelo | MLflow (run) | Hash de cada archivo publicado, rango de fechas, conteo y hash de las observaciones de la BD usadas, huella del código (ver D-009) y parámetros (`mlflow.log_input`), más el dataset de entrenamiento en parquet como artefacto |
 | Operación | PostgreSQL del producto | Solicitudes, correcciones, predicciones con la versión del modelo y observaciones |
 
 El producto (API y DAGs) nunca ejecuta DVC.
@@ -281,3 +281,43 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Exigir una mejora mínima del 1 % | Un umbral más sin datos para justificarlo; se puede revisar con la evaluación |
 | Promover siempre el último | No es un criterio |
 | Validación de 14 días | Métrica más ruidosa |
+
+## D-009: registro en MLflow, carga del modelo vigente y arranque desde cero
+
+**Fecha:** 2026-11-15
+
+**Contexto:** el enunciado pide registrar experimentos, modelos y su linaje en MLflow, identificar el modelo vigente con un alias, que el servicio use un modelo nuevo sin reinicio a más tardar 2 minutos después de promoverlo, que la API siga respondiendo con el modelo cargado aunque MLflow no esté disponible, y que desde cero el producto entrene y registre su primer modelo sin repetir ese trabajo al volver a levantarse.
+
+**Decisión:**
+
+- **Registry:** el modelo `novamercado-ventas` con el alias `vigente`, en el experimento `novamercado-ventas`.
+- **Cada reentrenamiento** es un run padre con un run hijo por candidato:
+  - Padre: tramos, linaje y motivo de la decisión.
+  - Hijos: tipo, hiperparámetros, factores por familia y métricas (costo, MAE, RMSE, WAPE, sesgo).
+  - El gradient boosting se registra como versión **siempre**, como evidencia de cada reentrenamiento. El baseline se registra solo si gana como primer modelo. Cada versión lleva las etiquetas `promovido` y `motivo`.
+- **Linaje** (run padre): huella sha256 de cada archivo publicado, conteo y huella de las observaciones y promociones de la BD, tramos, huella del código del paquete y el dataset con `mlflow.log_input`, más `objetivos.parquet` y `ventas.parquet` como artefactos.
+  - La huella del código sustituye al commit, porque los contenedores no tienen `.git`. Cambia si cambia cualquier archivo del paquete.
+- **Formato:** pyfunc "model from code" (`pyfunc_modelo.py`) con el `ModeloEntrenado` como artefacto `modelo.joblib`, sin serializar el código con CloudPickle, como recomienda MLflow. Las dependencias se fijan con las del paquete, sin inferirlas.
+- **El alias se mueve al final** y solo si el criterio de D-008 lo permite. Un reentrenamiento que falla, en cualquier punto, o que no supera el criterio, deja el alias donde estaba.
+- **Recarga en la API:** un hilo consulta el alias cada **30 s**. Si la versión cambió, descarga y carga la nueva, y recién entonces reemplaza a la anterior: la API nunca queda sin modelo. Si MLflow no responde, conserva el que tiene. El cliente de MLflow se configura sin reintentos y con un tiempo límite de 10 s, para no quedar bloqueado.
+- **Copia local:** cada modelo cargado se guarda (modelo y versión en un solo archivo, reemplazado de una vez) en un volumen de la API. Si la API arranca con MLflow caído, usa esa copia.
+- **`/health`** consulta `GET /health` de MLflow en cada llamada, con un tiempo límite de 3 s. Refleja la caída y la recuperación de inmediato, dentro de los límites de 1 y 2 minutos.
+- **Arranque desde cero:** `python -m novamercado.reentrenamiento --inicial` espera a MLflow. Si ya hay un modelo `vigente`, termina sin hacer nada; si no, entrena con los datos publicados y lo que haya en la BD, y registra. El DAG usará la misma función (`reentrenamiento.ejecutar`).
+- **Predicción:** usa el histórico publicado, cargado en memoria, más las observaciones de la tienda registradas en la BD, **solo de fechas anteriores** a la pronosticada.
+- Cliente `mlflow-skinny==3.17.2`. Era la última versión con más de dos semanas al elegirla, y es compatible con las restricciones de Airflow. Las pruebas usan MLflow sobre SQLite en una carpeta temporal, sin servidor (`alembic` solo como dependencia de desarrollo).
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Que el DAG avise a la API tras promover | Si el aviso se pierde la API queda con el modelo viejo; igual haría falta la consulta periódica |
+| Solo en memoria, sin copia local | Un reinicio con MLflow caído deja la API en 503 |
+| Entrenar el primer modelo desde el DAG | Depende de que Airflow esté listo y suma minutos al arranque |
+| Entrenar el primer modelo en la API | Mezcla el servicio con el entrenamiento |
+| Registrar solo el modelo promovido | Los reentrenamientos rechazados no dejarían versión para comparar |
+| pyfunc con el objeto serializado por CloudPickle | MLflow lo desaconseja; serializa código además de datos |
+
+**Verificación con los datos publicados**, MLflow local y PostgreSQL:
+- El primer arranque registró la v1: `Primer modelo. Costo en validación 90 556 vs 134 234 del baseline`.
+- El segundo arranque respondió `Ya hay un modelo vigente (v1): no se repite el entrenamiento inicial`.
+- `GET /modelo` → `{"nombre":"novamercado-ventas","alias":"vigente","version":"1"}`, y la predicción de la tienda 5 respondió las 12 familias en menos de 0.5 s.
