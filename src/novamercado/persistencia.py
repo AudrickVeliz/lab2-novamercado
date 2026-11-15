@@ -28,6 +28,7 @@ from sqlalchemy import (
     func,
     insert,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -45,6 +46,8 @@ from novamercado.limpieza import Resultado
 VARIABLE_URL = "NOVAMERCADO_BD_URL"
 
 Endpoint = Literal["prediccion", "observaciones"]
+# rechazada: 422 por los datos. no_atendida: 503 (sin modelo o el modelo falló).
+EstadoSinAtender = Literal["rechazada", "no_atendida"]
 
 metadata = MetaData()
 
@@ -122,8 +125,9 @@ def crear_motor(url: str | None = None) -> Engine:
     url = url or os.environ.get(VARIABLE_URL)
     if not url:
         raise BaseDeDatosNoConfigurada(f"Defina {VARIABLE_URL} (postgresql+psycopg://usuario:clave@host/base)")
-    # pool_pre_ping descarta conexiones que murieron mientras la base estuvo caída.
-    return create_engine(url, pool_pre_ping=True)
+    # pool_pre_ping descarta conexiones que murieron mientras la base estuvo caída;
+    # connect_timeout evita que /health quede esperando a una base que no responde.
+    return create_engine(url, pool_pre_ping=True, connect_args={"connect_timeout": 3})
 
 
 def crear_esquema(motor: Engine) -> None:
@@ -131,9 +135,16 @@ def crear_esquema(motor: Engine) -> None:
     metadata.create_all(motor)
 
 
-def registrar_rechazo(motor: Engine, endpoint: Endpoint, cuerpo: Any, motivo: str) -> int:
+def verificar_conexion(motor: Engine) -> None:
+    with motor.connect() as conexion:
+        conexion.execute(text("SELECT 1"))
+
+
+def registrar_rechazo(
+    motor: Engine, endpoint: Endpoint, cuerpo: Any, motivo: str, estado: EstadoSinAtender = "rechazada"
+) -> int:
     with motor.begin() as conexion:
-        return _insertar_solicitud(conexion, endpoint, cuerpo, "rechazada", motivo_rechazo=motivo)
+        return _insertar_solicitud(conexion, endpoint, cuerpo, estado, motivo_rechazo=motivo)
 
 
 def registrar_prediccion(
@@ -233,7 +244,7 @@ def _insertar_solicitud(
         insert(solicitudes)
         .values(
             endpoint=endpoint,
-            cuerpo=cuerpo,
+            cuerpo=_sin_nulos(cuerpo),
             estado=estado,
             motivo_rechazo=motivo_rechazo,
             tienda_id=tienda_id,
@@ -250,3 +261,39 @@ def _insertar_correcciones(conexion: Connection, solicitud_id: int, observacione
             insert(correcciones),
             [{"solicitud_id": solicitud_id, **o.model_dump()} for o in observaciones_calidad],
         )
+
+
+def _sin_nulos(valor: Any) -> Any:
+    """Reemplaza el carácter NUL, que JSONB no admite, para que la solicitud se pueda guardar."""
+    if isinstance(valor, str):
+        return valor.replace(chr(0), chr(0xFFFD))
+    if isinstance(valor, list):
+        return [_sin_nulos(v) for v in valor]
+    if isinstance(valor, dict):
+        return {_sin_nulos(k): _sin_nulos(v) for k, v in valor.items()}
+    return valor
+
+
+class RegistroPostgres:
+    """Registro de la operación que usa la API; las pruebas del contrato lo reemplazan por uno en memoria."""
+
+    def __init__(self, motor: Engine):
+        self.motor = motor
+
+    def verificar(self) -> None:
+        verificar_conexion(self.motor)
+
+    def rechazo(self, endpoint: Endpoint, cuerpo: Any, motivo: str, estado: EstadoSinAtender = "rechazada") -> int:
+        return registrar_rechazo(self.motor, endpoint, cuerpo, motivo, estado)
+
+    def prediccion(
+        self,
+        cuerpo: Any,
+        resultado: Resultado[SolicitudPrediccion],
+        respuesta: RespuestaPrediccion,
+        modelo_nombre: str,
+    ) -> int:
+        return registrar_prediccion(self.motor, cuerpo, resultado, respuesta, modelo_nombre)
+
+    def observacion(self, cuerpo: Any, resultado: Resultado[SolicitudObservacion]) -> int:
+        return registrar_observacion(self.motor, cuerpo, resultado)
