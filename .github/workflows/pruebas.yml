@@ -1,5 +1,6 @@
-# Pruebas del paquete en cada PR y en main. No usa los datos publicados ni
-# servicios externos: las pruebas que necesitan los datos reales se saltan.
+# Pruebas del paquete en cada PR y en main. No usa los datos publicados ni MLflow:
+# las pruebas que necesitan los datos reales se saltan. La persistencia se prueba
+# contra un PostgreSQL real, igual al que usa el producto.
 name: Pruebas
 
 on:
@@ -14,6 +15,22 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: docker.io/library/postgres:16.10
+        env:
+          POSTGRES_USER: pruebas
+          POSTGRES_PASSWORD: pruebas
+          POSTGRES_DB: pruebas
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pruebas"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NOVAMERCADO_BD_PRUEBAS_URL: postgresql+psycopg://pruebas:pruebas@localhost:5432/pruebas
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

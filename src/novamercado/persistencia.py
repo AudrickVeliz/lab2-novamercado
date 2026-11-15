@@ -1,0 +1,252 @@
+"""Registro de la operación en el PostgreSQL del producto (ver D-004).
+
+Cada solicitud queda guardada con su cuerpo crudo y su resultado, aceptada o
+rechazada. Las observaciones de ventas se guardan de forma idempotente: un
+reenvío idéntico no cambia nada y una corrección queda en el historial.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import os
+from typing import Any, Literal
+
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Date,
+    DateTime,
+    Engine,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    MetaData,
+    Table,
+    Text,
+    create_engine,
+    func,
+    insert,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as insert_pg
+from sqlalchemy.engine import Connection
+
+from novamercado.contrato import (
+    ObservacionCalidad,
+    RespuestaPrediccion,
+    SolicitudObservacion,
+    SolicitudPrediccion,
+)
+from novamercado.limpieza import Resultado
+
+VARIABLE_URL = "NOVAMERCADO_BD_URL"
+
+Endpoint = Literal["prediccion", "observaciones"]
+
+metadata = MetaData()
+
+solicitudes = Table(
+    "solicitudes",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("endpoint", Text, nullable=False),
+    # Reloj del servidor solo para auditoría; nunca decide si una fecha es válida.
+    Column("recibida_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("cuerpo", JSONB, nullable=False),
+    Column("estado", Text, nullable=False),
+    Column("motivo_rechazo", Text),
+    Column("tienda_id", Integer),
+    Column("fecha", Date),
+    Column("campos_ignorados", JSONB, nullable=False, server_default="[]"),
+)
+
+correcciones = Table(
+    "correcciones",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("solicitud_id", BigInteger, ForeignKey("solicitudes.id"), nullable=False, index=True),
+    Column("campo", Text, nullable=False),
+    Column("accion", Text, nullable=False),
+    Column("detalle", Text, nullable=False),
+)
+
+predicciones = Table(
+    "predicciones",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("solicitud_id", BigInteger, ForeignKey("solicitudes.id"), nullable=False, index=True),
+    Column("tienda_id", Integer, nullable=False),
+    Column("fecha", Date, nullable=False),
+    Column("familia_id", Text, nullable=False),
+    Column("en_promocion", Integer, nullable=False),
+    Column("venta_esperada", Float, nullable=False),
+    Column("cantidad_sugerida", Integer, nullable=False),
+    Column("modelo_nombre", Text, nullable=False),
+    Column("version_modelo", Text, nullable=False),
+    Index("ix_predicciones_tienda_fecha", "tienda_id", "fecha"),
+)
+
+observaciones = Table(
+    "observaciones",
+    metadata,
+    Column("tienda_id", Integer, primary_key=True),
+    Column("fecha", Date, primary_key=True),
+    Column("familia_id", Text, primary_key=True),
+    Column("ventas", Integer, nullable=False),
+    Column("solicitud_id", BigInteger, ForeignKey("solicitudes.id"), nullable=False),
+    Column("actualizada_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
+observaciones_historial = Table(
+    "observaciones_historial",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column("tienda_id", Integer, nullable=False),
+    Column("fecha", Date, nullable=False),
+    Column("familia_id", Text, nullable=False),
+    Column("ventas_anterior", Integer, nullable=False),
+    Column("ventas_nueva", Integer, nullable=False),
+    Column("solicitud_id", BigInteger, ForeignKey("solicitudes.id"), nullable=False),
+    Column("registrada_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
+
+class BaseDeDatosNoConfigurada(RuntimeError):
+    """Falta la URL de conexión a la base del producto."""
+
+
+def crear_motor(url: str | None = None) -> Engine:
+    url = url or os.environ.get(VARIABLE_URL)
+    if not url:
+        raise BaseDeDatosNoConfigurada(f"Defina {VARIABLE_URL} (postgresql+psycopg://usuario:clave@host/base)")
+    # pool_pre_ping descarta conexiones que murieron mientras la base estuvo caída.
+    return create_engine(url, pool_pre_ping=True)
+
+
+def crear_esquema(motor: Engine) -> None:
+    """Crea las tablas que falten; no modifica las existentes ni sus datos."""
+    metadata.create_all(motor)
+
+
+def registrar_rechazo(motor: Engine, endpoint: Endpoint, cuerpo: Any, motivo: str) -> int:
+    with motor.begin() as conexion:
+        return _insertar_solicitud(conexion, endpoint, cuerpo, "rechazada", motivo_rechazo=motivo)
+
+
+def registrar_prediccion(
+    motor: Engine,
+    cuerpo: Any,
+    resultado: Resultado[SolicitudPrediccion],
+    respuesta: RespuestaPrediccion,
+    modelo_nombre: str,
+) -> int:
+    solicitud = resultado.solicitud
+    promociones = {f.familia_id: f.en_promocion for f in solicitud.familias}
+    with motor.begin() as conexion:
+        solicitud_id = _insertar_solicitud(
+            conexion, "prediccion", cuerpo, resultado.calidad.estado,
+            tienda_id=solicitud.tienda_id, fecha=solicitud.fecha, ignorados=resultado.ignorados,
+        )
+        _insertar_correcciones(conexion, solicitud_id, resultado.observaciones)
+        conexion.execute(
+            insert(predicciones),
+            [
+                {
+                    "solicitud_id": solicitud_id,
+                    "tienda_id": solicitud.tienda_id,
+                    "fecha": solicitud.fecha,
+                    "familia_id": p.familia_id,
+                    "en_promocion": promociones[p.familia_id],
+                    "venta_esperada": p.venta_esperada,
+                    "cantidad_sugerida": p.cantidad_sugerida,
+                    "modelo_nombre": modelo_nombre,
+                    "version_modelo": respuesta.version_modelo,
+                }
+                for p in respuesta.predicciones
+            ],
+        )
+    return solicitud_id
+
+
+def registrar_observacion(motor: Engine, cuerpo: Any, resultado: Resultado[SolicitudObservacion]) -> int:
+    """Guarda las ventas y devuelve cuántos registros son nuevos o cambiaron (E09)."""
+    solicitud = resultado.solicitud
+    with motor.begin() as conexion:
+        solicitud_id = _insertar_solicitud(
+            conexion, "observaciones", cuerpo, resultado.calidad.estado,
+            tienda_id=solicitud.tienda_id, fecha=solicitud.fecha, ignorados=resultado.ignorados,
+        )
+        _insertar_correcciones(conexion, solicitud_id, resultado.observaciones)
+        return sum(
+            _guardar_venta(conexion, solicitud_id, solicitud.tienda_id, solicitud.fecha, v.familia_id, v.ventas)
+            for v in solicitud.ventas
+        )
+
+
+def _guardar_venta(
+    conexion: Connection, solicitud_id: int, tienda_id: int, fecha: dt.date, familia_id: str, ventas: int
+) -> int:
+    clave = {"tienda_id": tienda_id, "fecha": fecha, "familia_id": familia_id}
+    # Insertar primero evita la carrera de dos envíos simultáneos del mismo registro.
+    # RETURNING y no rowcount: con ON CONFLICT DO NOTHING, psycopg reporta rowcount -1.
+    insertado = conexion.execute(
+        insert_pg(observaciones)
+        .values(**clave, ventas=ventas, solicitud_id=solicitud_id)
+        .on_conflict_do_nothing()
+        .returning(observaciones.c.ventas)
+    ).first()
+    if insertado is not None:
+        return 1
+
+    filtro = [observaciones.c[k] == v for k, v in clave.items()]
+    anterior = conexion.execute(select(observaciones.c.ventas).where(*filtro).with_for_update()).scalar_one()
+    if anterior == ventas:
+        return 0
+    conexion.execute(
+        update(observaciones)
+        .where(*filtro)
+        .values(ventas=ventas, solicitud_id=solicitud_id, actualizada_en=func.now())
+    )
+    conexion.execute(
+        insert(observaciones_historial).values(
+            **clave, ventas_anterior=anterior, ventas_nueva=ventas, solicitud_id=solicitud_id
+        )
+    )
+    return 1
+
+
+def _insertar_solicitud(
+    conexion: Connection,
+    endpoint: Endpoint,
+    cuerpo: Any,
+    estado: str,
+    *,
+    motivo_rechazo: str | None = None,
+    tienda_id: int | None = None,
+    fecha: dt.date | None = None,
+    ignorados: list[str] | None = None,
+) -> int:
+    return conexion.execute(
+        insert(solicitudes)
+        .values(
+            endpoint=endpoint,
+            cuerpo=cuerpo,
+            estado=estado,
+            motivo_rechazo=motivo_rechazo,
+            tienda_id=tienda_id,
+            fecha=fecha,
+            campos_ignorados=ignorados or [],
+        )
+        .returning(solicitudes.c.id)
+    ).scalar_one()
+
+
+def _insertar_correcciones(conexion: Connection, solicitud_id: int, observaciones_calidad: list[ObservacionCalidad]) -> None:
+    if observaciones_calidad:
+        conexion.execute(
+            insert(correcciones),
+            [{"solicitud_id": solicitud_id, **o.model_dump()} for o in observaciones_calidad],
+        )

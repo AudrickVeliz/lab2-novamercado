@@ -120,3 +120,46 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Advertir por los campos desconocidos | Muchas respuestas pasarían a advertencia sin que se haya asumido nada |
 
 **Riesgo aceptado:** asumir día primero en una fecha ambigua puede pronosticar el día equivocado; queda advertido en la respuesta. El factor de atípicos (5) es un umbral de criterio que se revisará con los datos de la evaluación.
+
+## D-004: registro de la operación e idempotencia de las observaciones
+
+**Fecha:** 2026-11-15
+
+**Contexto:** el enunciado pide un PostgreSQL propio del producto, separado del de Airflow, que registre las solicitudes, las predicciones, las correcciones aplicadas y las observaciones de ventas reales. Recibir dos veces la misma observación no debe duplicar información, y `registros_guardados` cuenta solo los registros nuevos o modificados.
+
+**Decisión:**
+
+- Acceso con **SQLAlchemy 2 Core y psycopg 3**, en las versiones de las restricciones de Airflow 3.3.2, para que la API y el DAG compartan el módulo `novamercado.persistencia`.
+- El esquema se crea al arrancar con `create_all`, que solo crea las tablas que faltan y no toca las existentes ni sus datos.
+- Cinco tablas:
+
+| Tabla | Una fila por | Para qué |
+|---|---|---|
+| `solicitudes` | Solicitud recibida, **incluidos los rechazos** | Cuerpo crudo (JSONB), estado (`ok`, `corregido`, `advertencia` o `rechazada`), motivo del rechazo y campos ignorados |
+| `correcciones` | Observación de calidad | Qué se reparó o advirtió y por qué |
+| `predicciones` | Familia pronosticada | Promoción usada, venta esperada, cantidad sugerida, nombre y versión del modelo |
+| `observaciones` | Tienda, fecha y familia (clave primaria) | Valor vigente de las ventas reales |
+| `observaciones_historial` | Corrección de un valor ya guardado | Valor anterior y nuevo, y la solicitud que lo cambió |
+
+- **Idempotencia**, dentro de una transacción y por registro:
+  - Si no existe, se inserta (`ON CONFLICT DO NOTHING`) y cuenta 1.
+  - Si existe con el mismo valor, no se hace nada y cuenta 0.
+  - Si existe con otro valor, se actualiza, se guarda el cambio en el historial y cuenta 1.
+- Una tienda puede pedir varias veces el pronóstico de una misma fecha: cada solicitud y sus predicciones se guardan por separado.
+- `recibida_en` usa el reloj del servidor solo para auditoría; ninguna regla del servicio depende de él.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| SQLAlchemy ORM | Más abstracción de la que pide un registro de operación |
+| SQL a mano con psycopg | Hay que mantener a mano el esquema y la conexión |
+| Migraciones con Alembic | Una herramienta y un paso de arranque más para un esquema que se define una vez |
+| Guardar solo las solicitudes aceptadas | Se pierde la evidencia de qué se rechazó y por qué |
+| Correcciones como JSONB dentro de `solicitudes` | Cuesta más consultarlas, y el enunciado las nombra como algo a registrar |
+| Sobrescribir sin historial | Se pierde qué se sabía antes de cada corrección |
+| Probar con SQLite | `ON CONFLICT` y JSONB se comportan distinto que en PostgreSQL |
+
+**Justificación:** insertar primero con `ON CONFLICT DO NOTHING` y bloquear la fila existente (`SELECT … FOR UPDATE`) antes de compararla evita que dos envíos simultáneos del mismo registro se dupliquen o se cuenten dos veces. Hay una prueba con cuatro envíos simultáneos. La inserción se detecta con `RETURNING`, porque psycopg reporta `rowcount = -1` en un `INSERT … ON CONFLICT DO NOTHING`.
+
+**Pruebas:** corren contra un PostgreSQL 16.10 real, como servicio en el CI y en un contenedor temporal en local. Sin `NOVAMERCADO_BD_PRUEBAS_URL` se saltan.
