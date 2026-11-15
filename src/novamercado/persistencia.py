@@ -11,6 +11,7 @@ import datetime as dt
 import os
 from typing import Any, Literal
 
+import pandas as pd
 from sqlalchemy import (
     BigInteger,
     Column,
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    Select,
     Table,
     Text,
     create_engine,
@@ -138,6 +140,40 @@ def crear_esquema(motor: Engine) -> None:
 def verificar_conexion(motor: Engine) -> None:
     with motor.connect() as conexion:
         conexion.execute(text("SELECT 1"))
+
+
+def leer_observaciones(
+    motor: Engine, tienda_id: int | None = None, desde: dt.date | None = None, antes_de: dt.date | None = None
+) -> pd.DataFrame:
+    """Ventas vigentes registradas (fecha, tienda_id, familia_id, ventas); antes_de es exclusivo."""
+    consulta = select(observaciones.c.fecha, observaciones.c.tienda_id, observaciones.c.familia_id, observaciones.c.ventas)
+    if tienda_id is not None:
+        consulta = consulta.where(observaciones.c.tienda_id == tienda_id)
+    if desde is not None:
+        consulta = consulta.where(observaciones.c.fecha >= desde)
+    if antes_de is not None:
+        consulta = consulta.where(observaciones.c.fecha < antes_de)
+    return _tabla(motor, consulta, ["fecha", "tienda_id", "familia_id", "ventas"])
+
+
+def leer_promociones(motor: Engine) -> pd.DataFrame:
+    """Promoción del día por tienda, fecha y familia, según la última predicción registrada."""
+    ultima = (
+        select(func.max(predicciones.c.id).label("id"))
+        .group_by(predicciones.c.tienda_id, predicciones.c.fecha, predicciones.c.familia_id)
+        .subquery()
+    )
+    consulta = select(
+        predicciones.c.fecha, predicciones.c.tienda_id, predicciones.c.familia_id, predicciones.c.en_promocion
+    ).join(ultima, predicciones.c.id == ultima.c.id)
+    return _tabla(motor, consulta, ["fecha", "tienda_id", "familia_id", "en_promocion"])
+
+
+def _tabla(motor: Engine, consulta: Select, columnas: list[str]) -> pd.DataFrame:
+    with motor.connect() as conexion:
+        tabla = pd.DataFrame(conexion.execute(consulta).all(), columns=columnas)
+    tabla["fecha"] = pd.to_datetime(tabla["fecha"])
+    return tabla
 
 
 def registrar_rechazo(

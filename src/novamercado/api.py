@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,15 +38,23 @@ from novamercado.limpieza import (
     limpiar_prediccion,
     maximos_historicos,
 )
+from novamercado.modelo import ModeloEntrenado
 from novamercado.persistencia import (
     Endpoint,
     EstadoSinAtender,
     RegistroPostgres,
     crear_esquema,
     crear_motor,
+    leer_observaciones,
 )
+from novamercado.prediccion import ModeloVigente, PredictorVentas
+from novamercado.registro_modelos import cargar_version, verificar_servidor, version_vigente
 
 log = logging.getLogger(__name__)
+
+VARIABLE_COPIA = "NOVAMERCADO_COPIA_MODELO"
+# Copia local del modelo vigente, para arrancar aunque MLflow no responda (D-009).
+COPIA_PREDETERMINADA = "/var/lib/novamercado/modelo/vigente.joblib"
 
 SIN_MODELO = "El modelo todavía no está disponible"
 SIN_REGISTRO = "No se pudo registrar la solicitud; intente de nuevo"
@@ -200,24 +210,37 @@ def _fallas(chequeos: Mapping[str, Callable[[], None]]) -> list[str]:
     return fallas
 
 
-def _cargar_referencia(carpeta: Path) -> Referencia:
-    catalogos = cargar_catalogos(carpeta)
-    return Referencia(catalogos, maximos_historicos(cargar_historico(catalogos, carpeta)))
-
-
 def app_desde_entorno() -> FastAPI:
-    """Arma la app con los datos publicados y la base del producto; falla al arrancar si faltan."""
+    """Arma la app con los datos publicados, la base del producto y MLflow; falla al arrancar si faltan."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    referencia = _cargar_referencia(carpeta_datos())
+    # Por defecto el cliente de MLflow reintenta 7 veces con espera creciente: con MLflow caído,
+    # la recarga quedaría bloqueada varios minutos. Mejor fallar rápido y probar en 30 s.
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_MAX_RETRIES", "0")
+    os.environ.setdefault("MLFLOW_HTTP_REQUEST_TIMEOUT", "10")
+    carpeta = carpeta_datos()
+    catalogos = cargar_catalogos(carpeta)
+    historico = cargar_historico(catalogos, carpeta)
     motor = crear_motor()
     crear_esquema(motor)
     registro = RegistroPostgres(motor)
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "")
+
+    def crear_predictor(modelo: ModeloEntrenado, version: str) -> PredictorVentas:
+        return PredictorVentas(
+            modelo, version, catalogos, historico,
+            lambda tienda, desde, antes_de: leer_observaciones(motor, tienda, desde, antes_de),
+        )
+
+    vigente = ModeloVigente(
+        version_vigente, cargar_version, crear_predictor, Path(os.environ.get(VARIABLE_COPIA, COPIA_PREDETERMINADA))
+    )
+    vigente.iniciar()
+    threading.Thread(target=vigente.vigilar, args=(threading.Event(),), daemon=True, name="modelo-vigente").start()
     return crear_app(
         Dependencias(
-            referencia=referencia,
+            referencia=Referencia(catalogos, maximos_historicos(historico)),
             registro=registro,
-            # El PR del modelo conecta aquí el modelo vigente del Model Registry de MLflow.
-            predictor=lambda: None,
-            chequeos={"base de datos": registro.verificar},
+            predictor=vigente,
+            chequeos={"base de datos": registro.verificar, "MLflow": lambda: verificar_servidor(tracking_uri)},
         )
     )

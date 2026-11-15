@@ -17,11 +17,6 @@ from novamercado.entrenamiento import (
 from novamercado.modelo import Baseline, ModeloEntrenado
 
 
-@pytest.fixture(scope="module")
-def entrenado(historico, catalogos):
-    return entrenar(preparar_datos(historico), catalogos)
-
-
 def candidato(costo, tipo=Baseline):
     return Candidato(ModeloEntrenado(tipo(), {}), {"costo": costo})
 
