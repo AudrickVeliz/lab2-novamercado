@@ -49,8 +49,41 @@ Lo principal no es el modelo, sino operar el servicio: defender el contrato, reg
 - Cada decisión técnica o de producto se registra en `DECISIONES.md` con sus alternativas y su justificación, en particular: la política ante cada tipo de problema en los datos, la información que usa el modelo al predecir, la elección de la cantidad sugerida y el criterio de reemplazo del modelo.
 - `README.md` debe permitir levantar el producto desde cero, e indicar la carpeta donde se colocan los archivos publicados.
 
+## Fidelidad al enunciado
+
+- El enunciado (`Laboratorio_2_PD_26_c.pdf`, fuera de Git) es la fuente de verdad. Si una mejora choca con él, gana el enunciado.
+- Los nombres de campos, los tipos, los valores permitidos y los códigos HTTP del Anexo se copian literalmente, y las pruebas del contrato los comprueban.
+- Cada PR indica qué requerimiento del enunciado cubre: el número del requerimiento o el endpoint del Anexo.
+
+## Código
+
+- Funciones cortas y de un solo propósito. Los nombres van en español y son los del dominio (tienda, familia, observación), iguales en el código, la base de datos y la documentación.
+- Una regla vive en un solo lugar: una normalización o una política se reutiliza, no se copia.
+- Sin valores mágicos: los umbrales y parámetros de política son constantes con nombre justificadas en `DECISIONES.md`, o salen de los datos publicados.
+- Sin código especulativo: nada de parámetros, capas o abstracciones "por si acaso", código muerto ni imports sin uso.
+- Errores explícitos: excepciones propias del dominio, con mensajes que digan qué revisar. Nunca un `except` vacío ni un error silenciado.
+- Tipos en las firmas de las funciones públicas.
+- No se agrega una dependencia si alcanza con la biblioteca estándar o con una que ya está.
+
+## Comentarios y docstrings
+
+- Un comentario explica el porqué (regla de negocio, supuesto, restricción, referencia a una decisión `D-XXX`). Nunca repite lo que el código ya dice.
+- Una línea; dos solo si la segunda aporta un hecho nuevo.
+- Sin separadores decorativos (`# ---`, `# ===`), mayúsculas para gritar, emojis, narración paso a paso ("Paso 1…") ni marcadores de fin de bloque.
+- Sin TODOs vagos: un TODO dice qué falta y por qué, o no se escribe.
+- Un docstring solo existe si dice algo que la firma no: reglas, supuestos, efectos o errores.
+- Se conservan siempre los comentarios sobre reglas de negocio, decisiones, contratos, seguridad y casos límite.
+
+## Pruebas
+
+- Cada política, regla o criterio tiene al menos una prueba que lo nombra (`test_e08_...`).
+- Las pruebas no dependen de servidores en ejecución (MLflow, Airflow, base de datos) ni de los datos publicados; las que usan los datos reales se saltan si no están.
+- Una prueba que falla no se ajusta hasta entender por qué falló: puede ser el código o la prueba.
+
 ## Cómo trabajar en este proyecto
 
 - Avanza paso a paso y consulta con Audrick cómo hacer cada paso antes de implementarlo.
+- Antes de abrir un PR, revisa el diff contra estas reglas y contra el enunciado, corre pytest y reporta el resultado en el PR.
+- No se instalan skills, plugins ni herramientas de agentes de terceros: las buenas prácticas se escriben aquí.
 - Explica el porqué de cada decisión: Audrick debe poder comprender y justificar todo el código.
 - No declares algo terminado sin haberlo ejecutado; reporta el comando y el resultado.
