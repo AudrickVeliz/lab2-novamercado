@@ -199,3 +199,85 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Dejar que FastAPI valide el cuerpo | Su 422 trae una lista de errores en `detail` y la solicitud no quedaría registrada |
 
 **Pruebas:** las del contrato usan un predictor falso y un registro en memoria, así que no dependen de MLflow ni de la base. Una prueba de integración repite el recorrido con el PostgreSQL real.
+
+## D-006: información que usa el modelo al predecir
+
+**Fecha:** 2026-11-15
+
+**Contexto:** al pronosticar una fecha, el servicio solo dispone de las observaciones de días anteriores; la promoción del día viene en la solicitud. El análisis del histórico muestra un patrón semanal fuerte (sábado 1.23×, lunes 0.88×), un crecimiento del 10 % interanual, un diciembre 1.21× noviembre y un efecto de la promoción de entre 1.14× (panadería) y 1.39× (limpieza). También muestra efectos por tipo de fecha: feriado 0.89×, comercial 1.14×, pago 1.19× y medio día 1.96×. El periodo de evaluación puede incluir cambios en la demanda.
+
+**Decisión:** `novamercado.caracteristicas` calcula, para cada tienda, familia y fecha:
+
+| Grupo | Variables | Fuente |
+|---|---|---|
+| Identidad | `tienda_id`, `familia_id`, `tipo_tienda` (categóricas con las categorías del catálogo) | Catálogos |
+| Promoción | `en_promocion` del día | Solicitud |
+| Calendario | `dia_semana`, `dia_mes`, `mes`, `dias_desde_apertura` | Fecha y `tiendas.csv` |
+| Tipos de fecha | `feriado`, `comercial`, `pago`, `medio_dia`, `vispera_feriado`, nacionales o de la ciudad de la tienda | `feriados.csv` |
+| Historia reciente | `venta_ayer`, `ultima_venta`, `dias_sin_dato`, `media_7`, `media_28`, `venta_hace_7`, `media_mismo_dia_4`, `venta_hace_364` | Ventas de **días anteriores** |
+
+- Ninguna variable usa la venta del día que se pronostica ni ventas posteriores; una prueba lo verifica alterando las ventas futuras.
+- Si falta la observación de ayer, `ultima_venta` y `dias_sin_dato` dicen cuál fue la última conocida y hace cuánto. Las demás quedan vacías, y el modelo admite valores faltantes.
+- Modelo de ML: un único `HistGradientBoostingRegressor` (scikit-learn 1.9.1) para todas las tiendas y familias, con pérdida de Poisson y sin `early_stopping`, porque su validación interna es aleatoria y mezclaría fechas futuras. Los hiperparámetros (`learning_rate=0.05`, `max_iter=500`, `max_leaf_nodes=15`, `min_samples_leaf=40`, `l2_regularization=1.0`) se eligieron comparando cinco configuraciones en un corte **anterior** a la ventana de validación, para no ajustarse a ella.
+- Baseline: la media de los últimos cuatro días con el mismo día de la semana; si no hay cuatro semanas de historia, la media de 28 días o la última venta.
+- Una variable sin ningún dato al entrenar (`venta_hace_364` con menos de un año de historia) se trata como constante, igual al entrenar que al predecir.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Sin historia reciente | No se adapta si cambia la demanda |
+| LightGBM | Dependencia nueva, fuera de las restricciones de Airflow |
+| Regresión lineal | Capta mal las interacciones (promoción × familia, feriado × tipo de tienda) |
+| Un modelo por tienda y familia | 120 modelos con pocos datos cada uno y una tienda nueva sin modelo |
+| Naive semanal como baseline | Peor en dic–feb (WAPE 0.303 frente a 0.278) |
+
+**Resultado con los datos publicados** (validación del 2026-02-01 al 2026-02-28):
+
+| Modelo | Costo | WAPE | MAE | RMSE |
+|---|---|---|---|---|
+| Baseline | 134 234 | 0.215 | 45.9 | 85.4 |
+| HistGradientBoosting | 90 556 | 0.177 | 37.9 | 69.2 |
+
+## D-007: cantidad sugerida a partir de los costos
+
+**Fecha:** 2026-11-15
+
+**Contexto:** la cantidad sugerida se evalúa con `costo = c_faltante × máx(real − sugerido, 0) + c_sobrante × máx(sugerido − real, 0)`, y los costos difieren entre familias.
+
+**Decisión:** `cantidad_sugerida = redondeo(venta_esperada × factor_familia)`, entera y no negativa. El factor de cada familia es el cuantil `c_faltante / (c_faltante + c_sobrante)` de `real / esperada`, **ponderado por la venta esperada**, calculado en la ventana de calibración (D-008).
+
+**Justificación:** si la sugerida es `f × esperada`, el costo total es `Σ esperada × [c_f × máx(r − f, 0) + c_s × máx(f − r, 0)]` con `r = real / esperada`, y su mínimo en `f` es exactamente ese cuantil ponderado (el resultado del newsvendor). La ponderación hace que los pronósticos cercanos a cero no distorsionen el factor. Los factores resultantes siguen los costos: licores ×1.46 (sobrar cuesta 0.1), abarrotes ×1.27, panadería ×0.85 (sobrar cuesta 2.5). En la validación, los factores bajan el costo de 121 123, sugiriendo exactamente la venta esperada, a 90 556.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Regresión por cuantiles | Doce modelos más que entrenar, registrar y cargar |
+| Factor de seguridad fijo | Ignora que los costos difieren entre familias |
+| Sugerir la venta esperada | 34 % más de costo en la validación |
+
+## D-008: validación y criterio de reemplazo del modelo
+
+**Fecha:** 2026-11-15
+
+**Contexto:** el enunciado pide un criterio explícito y automatizado para decidir cuándo un modelo nuevo reemplaza al vigente, y que un reentrenamiento que no lo supere no afecte al vigente.
+
+**Decisión:**
+
+- Tres tramos consecutivos, hasta la última fecha con ventas `T`: **entrenamiento** hasta `T−56`, **calibración** de los factores de `T−55` a `T−28` y **validación** de `T−27` a `T` (28 días cada uno). Todo fuera de muestra.
+- En cada entrenamiento se entrenan el baseline y el gradient boosting con los mismos tramos.
+- **Primer modelo** (no hay vigente): se promueve el de menor costo en validación.
+- **Reemplazo:** el gradient boosting se promueve solo si su costo en validación es menor que el del baseline **y** que el del modelo vigente medido en la **misma** ventana. El motivo queda escrito con el formato del Anexo: `Costo en validación 18 210 vs 19 940 del vigente`.
+- Las filas sin promoción conocida (observaciones de días que nadie pidió pronosticar) alimentan las variables de historia, pero no el aprendizaje.
+
+**Justificación:** si los factores se calibraran en la misma ventana en que se mide el costo, el candidato saldría optimista frente al vigente, que se calibró con días anteriores. Con tres tramos, la validación de un reentrenamiento siempre queda fuera de lo que vio el vigente: su validación terminó en su propia `T`, que es anterior. El modelo aprende con datos de hasta 8 semanas atrás, pero predice con las observaciones más recientes a través de las variables de historia.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Dos tramos (calibrar y medir en la misma ventana) | Costo optimista del candidato |
+| Exigir una mejora mínima del 1 % | Un umbral más sin datos para justificarlo; se puede revisar con la evaluación |
+| Promover siempre el último | No es un criterio |
+| Validación de 14 días | Métrica más ruidosa |
