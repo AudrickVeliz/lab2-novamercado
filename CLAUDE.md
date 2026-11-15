@@ -28,8 +28,13 @@ Lo principal no es el modelo, sino operar el servicio: defender el contrato, reg
 ## Datos
 
 - Los archivos publicados por el equipo docente van en `data/publicados/`. Ningún dato se genera fuera de la carpeta del proyecto.
-- Ningún dato, modelo ni credencial va en Git ni en las imágenes. Los datos se versionan con DVC, con un remoto local en `dvc-remote/`.
-- Las credenciales se pasan por variables de entorno; `.env.example` documenta las necesarias.
+- Ningún dato, modelo ni credencial va en Git ni en las imágenes.
+- Cada cosa se versiona en un solo lugar (ver D-002):
+  - **Datos de entrada** (`data/publicados/`): DVC, con un remoto privado en DagsHub. Solo se usa en desarrollo.
+  - **Modelos, experimentos y linaje**: MLflow. Cada run registra con qué datos y con qué código se entrenó, e incluye un snapshot del dataset de entrenamiento.
+  - **Operación** (solicitudes, correcciones, predicciones con su versión de modelo, observaciones): el PostgreSQL del producto.
+- El producto nunca ejecuta DVC ni depende de DagsHub: el equipo docente coloca sus propios archivos y levanta sin credenciales personales.
+- Las credenciales se pasan por variables de entorno; `.env.example` documenta las necesarias. El token de DagsHub solo vive en `.dvc/config.local`.
 
 ## Entorno
 
