@@ -1,10 +1,10 @@
 # Servicio de pronóstico de NovaMercado
 
-Laboratorio 2 de Product Development. Servicio de ML en producción que pronostica las ventas diarias por tienda y familia, se defiende de los datos defectuosos, registra lo que predice y lo que ocurre, y reentrena su modelo con MLflow (y, próximamente, Airflow).
+Laboratorio 2 de Product Development. Servicio de ML en producción que pronostica las ventas diarias por tienda y familia, se defiende de los datos defectuosos, registra lo que predice y lo que ocurre, y reentrena su modelo con Airflow y MLflow.
 
 ## Levantar el producto desde cero
 
-Requisitos: Docker con Docker Compose (o Podman con `podman compose`), y unos 2 GB de memoria libre.
+Requisitos: Docker con Docker Compose (o Podman con `podman compose`), y unos 4 GB de memoria libre.
 
 1. Clonar el repositorio.
 2. **Colocar los archivos publicados en `data/publicados/`**, con sus nombres originales:
@@ -28,7 +28,7 @@ Requisitos: Docker con Docker Compose (o Podman con `podman compose`), y unos 2 
 
    No hace falta un archivo `.env`; `.env.example` documenta las variables por si se quieren cambiar las credenciales.
 
-4. Esperar a que el servicio esté listo (menos de un minuto después de construir las imágenes):
+4. Esperar a que el servicio esté listo (unos minutos después de construir las imágenes, mientras arranca Airflow):
 
    ```
    curl http://localhost:8000/health
@@ -41,6 +41,19 @@ Al levantarse desde cero no existe ningún modelo: el servicio `entrenamiento-in
 |---|---|
 | API | http://localhost:8000 (contrato del Anexo) |
 | MLflow | http://localhost:5000 |
+| Airflow | http://localhost:8080 (usuario `airflow`, clave `airflow`) |
+
+Reentrenar y seguir la ejecución:
+
+```
+curl -X POST http://localhost:8000/admin/reentrenar
+{"id":"manual__2026-11-16T00:00:00+00:00"}
+
+curl http://localhost:8000/admin/reentrenar/manual__2026-11-16T00:00:00%2B00:00
+{"estado":"exitoso","promovido":false,"version":"1","motivo":"No supera al vigente. ..."}
+```
+
+Si el modelo nuevo se promueve, la API lo usa en menos de 30 segundos, sin reiniciarse.
 
 Detener sin borrar nada: `docker compose down`. Borrar también los datos guardados: `docker compose down -v`.
 
