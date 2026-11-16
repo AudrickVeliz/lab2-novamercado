@@ -20,15 +20,19 @@ Requisitos: Docker con Docker Compose (o Podman con `podman compose`), y unos 4 
    └── ejemplos/
    ```
 
-3. Levantar:
+3. Crear el archivo de credenciales, que no forma parte del repositorio (conviene cambiar las claves de ejemplo):
+
+   ```
+   cp .env.example .env
+   ```
+
+4. Levantar:
 
    ```
    docker compose up -d --build
    ```
 
-   No hace falta un archivo `.env`; `.env.example` documenta las variables por si se quieren cambiar las credenciales.
-
-4. Esperar a que el servicio esté listo (unos minutos después de construir las imágenes, mientras arranca Airflow):
+5. Esperar a que el servicio esté listo (unos minutos después de construir las imágenes, mientras arranca Airflow):
 
    ```
    curl http://localhost:8000/health
@@ -41,7 +45,7 @@ Al levantarse desde cero no existe ningún modelo: el servicio `entrenamiento-in
 |---|---|
 | API | http://localhost:8000 (contrato del Anexo) |
 | MLflow | http://localhost:5000 |
-| Airflow | http://localhost:8080 (usuario `airflow`, clave `airflow`) |
+| Airflow | http://localhost:8080 (usuario y clave: `AIRFLOW_USUARIO` y `AIRFLOW_CLAVE` del `.env`) |
 
 Reentrenar y seguir la ejecución:
 

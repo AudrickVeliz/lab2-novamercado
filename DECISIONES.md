@@ -343,7 +343,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 - **Imagen del producto:** `python:3.12.15-slim-bookworm`, con el paquete instalado con las restricciones de Airflow 3.3.2. Corre con un usuario sin privilegios (uid 1000). Solo copia `pyproject.toml` y `src/` (`.dockerignore`).
 - **Datos:** `data/publicados/` se monta solo lectura en `/datos/publicados`.
 - **Volúmenes con nombre** para las dos bases, los artefactos de MLflow y la copia local del modelo. Sobreviven a `docker compose down` (sin `-v`), funcionan igual en Docker y en Podman, y PostgreSQL no sufre los problemas de permisos y `fsync` de una carpeta de Windows montada en la VM. Además, OneDrive no intenta sincronizar los archivos de las bases.
-- **Credenciales:** cada variable tiene un valor por defecto en el compose (`${VARIABLE:-valor}`), así `docker compose up` funciona sin un `.env`. `.env.example` las documenta, y un `.env` real nunca entra al repositorio.
+- **Credenciales:** el enunciado dice que *las credenciales no forman parte de las imágenes ni del repositorio*. El compose las toma del archivo `.env` (que Git ignora) con `${VARIABLE:?mensaje}`, **sin valores por defecto**: si falta una, `docker compose` se detiene y dice cuál. `.env.example` documenta cada variable con valores de ejemplo, y el README incluye el paso `cp .env.example .env`. El código tampoco tiene claves por defecto: la API no arranca sin el usuario y la clave de Airflow.
 - **Puertos en la máquina:** 8000 (API) y 5000 (interfaz de MLflow, para la evidencia). Las bases solo son accesibles dentro de la red del compose.
 - **MLflow 3** rechaza los `Host` que no conoce (protección contra DNS rebinding). Se permiten `mlflow:5000`, el nombre en la red, y `localhost` / `127.0.0.1`, sin desactivar la protección.
 - **Ejecutor de trabajos de MLflow 3** (evaluación de GenAI): desactivado con `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`. No se usa, y ocupaba ~2 GB y una CPU; el servidor bajó a ~590 MB. Se usan 2 workers.
@@ -355,7 +355,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 |---|---|
 | Carpetas de Lab 2 como volúmenes | PostgreSQL falla por permisos y `fsync` sobre la carpeta montada en la VM rootless, y OneDrive sincronizaría la base |
 | Una sola base para el producto y MLflow | Acopla ambos servicios: reiniciar uno afecta al otro |
-| Exigir un `.env` | Un paso manual más para el equipo docente |
+| Valores por defecto en el compose (`${VARIABLE:-valor}`) | `docker compose up` funcionaría sin `.env`, pero las claves quedarían escritas en el repositorio |
 | `--disable-security-middleware` en MLflow | La propia ayuda de MLflow lo marca como peligroso |
 | `psycopg2` en la imagen de MLflow | MLflow 3.17 usa el dialecto de psycopg 3: el servidor no arrancaba |
 
