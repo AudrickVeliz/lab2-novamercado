@@ -302,6 +302,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 - **Formato:** pyfunc "model from code" (`pyfunc_modelo.py`) con el `ModeloEntrenado` como artefacto `modelo.joblib`, sin serializar el código con CloudPickle, como recomienda MLflow. Las dependencias se fijan con las del paquete, sin inferirlas.
 - **El alias se mueve al final** y solo si el criterio de D-008 lo permite. Un reentrenamiento que falla, en cualquier punto, o que no supera el criterio, deja el alias donde estaba.
 - **Recarga en la API:** un hilo consulta el alias cada **30 s**. Si la versión cambió, descarga y carga la nueva, y recién entonces reemplaza a la anterior: la API nunca queda sin modelo. Si MLflow no responde, conserva el que tiene. El cliente de MLflow se configura sin reintentos y con un tiempo límite de 10 s, para no quedar bloqueado.
+- **`dill` en las dependencias del producto.** Un modelo entrenado dentro de Airflow guarda el `functools.partial` interno de scikit-learn con una referencia a `dill._dill` (Airflow tiene `dill` activo en su proceso). Sin `dill`, la API no podía cargar ningún modelo entrenado por el DAG (`No module named 'dill'`) y se quedaba con el anterior aunque el alias cambiara. La simulación de D-012 lo detectó, y el CI en Docker ahora comprueba que la API carga la versión que entrenó Airflow.
 - **Copia local:** cada modelo cargado se guarda (modelo y versión en un solo archivo, reemplazado de una vez) en un volumen de la API. Si la API arranca con MLflow caído, usa esa copia.
 - **`/health`** consulta `GET /health` de MLflow en cada llamada, con un tiempo límite de 3 s. Refleja la caída y la recuperación de inmediato, dentro de los límites de 1 y 2 minutos.
 - **Arranque desde cero:** `python -m novamercado.reentrenamiento --inicial` espera a MLflow. Si ya hay un modelo `vigente`, termina sin hacer nada; si no, entrena con los datos publicados y lo que haya en la BD, y registra. El DAG usará la misma función (`reentrenamiento.ejecutar`).
@@ -399,3 +400,27 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Cliente HTTP con `requests` o `httpx` | Una dependencia más para cuatro llamadas |
 
 **Prueba en Docker:** el workflow `Compose en Docker` genera archivos publicados sintéticos (`tests/datos_sinteticos.py`) y recorre en GitHub Actions, con Docker, el camino del equipo docente: levantar desde cero, predicción válida y defectuosa, observación idempotente, reentrenamiento por `/admin`, interrupción de MLflow y reinicio conservando los volúmenes.
+
+## D-012: simulación de operación y evidencia de funcionamiento
+
+**Fecha:** 2026-11-16
+
+**Contexto:** la evaluación simula la operación diaria durante un periodo no publicado, que puede incluir cambios en la demanda, con reentrenamientos periódicos, y mide el costo de las sugerencias. El enunciado pide como evidencia los experimentos y versiones en MLflow, las ejecuciones del DAG y ejemplos de respuestas válidas y defectuosas.
+
+**Decisión:**
+
+- `scripts/simular_operacion.py` imita ese programa contra el producto levantado:
+  - **Ventas reales simuladas:** el mismo día de la semana del año anterior × 1.10 (crecimiento interanual observado) × 1.20 desde la semana 4 × ruido de Poisson. La promoción es la de ese día del año anterior, así se conservan la estacionalidad, los feriados y el efecto real de la promoción.
+  - **Cada día:** primero las observaciones del día anterior y después una solicitud de pronóstico por tienda. El 15 % lleva un problema del catálogo y el 5 % de las observaciones se reenvía.
+  - **Cada 14 días:** reentrenamiento por `POST /admin/reentrenar`. Si promueve, se mide cuánto tarda la API en usar la versión nueva.
+  - Mide el costo de las sugerencias frente a una referencia ingenua: sugerir la media de los 4 mismos días anteriores.
+- `scripts/exportar_evidencia.py` obtiene la evidencia de las APIs de MLflow, Airflow y el producto, así es reproducible. Las credenciales de Airflow se leen del `.env`.
+- En el repositorio queda el resumen (`docs/evidencia/*.md`). El detalle por fila (`simulacion.csv`) se deriva de los datos publicados, así que se ignora, como los datos.
+
+**Resultado** (10 semanas desde el 2026-03-01, el producto levantado desde cero): ver [docs/evidencia/simulacion.md](docs/evidencia/simulacion.md).
+- El costo de las sugerencias es un 35.8 % menor que el de la referencia ingenua.
+- De 5 reentrenamientos, 4 promovieron un modelo nuevo y la API lo usó en 22 a 28 s, sin reinicio (límite: 2 min). El que no superó al vigente lo dejó intacto.
+
+**Lo que encontró la simulación:** en la primera corrida, los modelos promovidos **no entraban en uso**. La API no podía cargar un modelo entrenado dentro de Airflow (`No module named 'dill'`, ver D-009) y seguía con la v1 aunque el alias cambiara. Las pruebas unitarias no lo detectaban, porque el entrenamiento y la carga corrían en el mismo entorno. Se corrigió agregando `dill`, y el CI en Docker ahora comprueba que la API carga un modelo entrenado por Airflow.
+
+**Riesgo observado:** tras el cambio de demanda, el modelo subestima (−13.5 % y −12.4 % en las semanas 4 y 5) hasta que las variables de historia reciente lo absorben. Algunas promociones ganan por márgenes pequeños (134 459 frente a 134 556); si en la evaluación el modelo cambiara demasiado seguido, la alternativa es exigir una mejora mínima (D-008).
