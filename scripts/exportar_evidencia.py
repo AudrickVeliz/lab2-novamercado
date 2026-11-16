@@ -151,12 +151,15 @@ def principal() -> None:
     salida = Path(a.salida)
     salida.mkdir(parents=True, exist_ok=True)
     credenciales = leer_env(Path(a.env))
-    (salida / "mlflow.md").write_text("\n".join(mlflow(a.mlflow)) + "\n", encoding="utf-8")
-    (salida / "airflow.md").write_text(
-        "\n".join(airflow(a.airflow, credenciales["AIRFLOW_USUARIO"], credenciales["AIRFLOW_CLAVE"])) + "\n", encoding="utf-8"
-    )
-    (salida / "respuestas.md").write_text("\n".join(respuestas(a.api, Path(a.datos) / "ejemplos")) + "\n", encoding="utf-8")
+    _escribir(salida / "mlflow.md", mlflow(a.mlflow))
+    _escribir(salida / "airflow.md", airflow(a.airflow, credenciales["AIRFLOW_USUARIO"], credenciales["AIRFLOW_CLAVE"]))
+    _escribir(salida / "respuestas.md", respuestas(a.api, Path(a.datos) / "ejemplos"))
     print(f"Evidencia en {salida}")
+
+
+def _escribir(ruta: Path, lineas: list[str]) -> None:
+    # LF también en Windows, como el resto del repositorio.
+    ruta.write_text("\n".join(lineas) + "\n", encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

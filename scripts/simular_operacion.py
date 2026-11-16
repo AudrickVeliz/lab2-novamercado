@@ -227,7 +227,8 @@ def escribir_reporte(ruta, a, inicio_cambio, detalle, reentrenamientos, estados_
     for r in reentrenamientos:
         usar = f"{r['segundos_hasta_usarlo']} s" if "segundos_hasta_usarlo" in r else "—"
         lineas.append(f"| {r['dia']} | {r.get('estado')} | {r.get('promovido')} | {r.get('version_anterior')} → {r.get('version')} | {r.get('motivo')} | {r.get('segundos', '—')} s | {usar} |")
-    Path(ruta).write_text("\n".join(lineas) + "\n", encoding="utf-8")
+    # LF también en Windows, como el resto del repositorio.
+    Path(ruta).write_text("\n".join(lineas) + "\n", encoding="utf-8", newline="\n")
     print("\n".join(lineas))
 
 
