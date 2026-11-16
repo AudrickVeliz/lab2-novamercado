@@ -20,6 +20,42 @@ x-producto: &producto
   volumes:
     - ./data/publicados:/datos/publicados:ro
 
+# Airflow 3.3.2 adaptado a una laptop, como en el Lab 1 (D-011): LocalExecutor sin Celery ni Redis.
+x-airflow: &airflow
+  image: localhost/novamercado-airflow:3.3.2
+  build:
+    context: .
+    dockerfile: Containerfile.airflow
+  environment: &entorno-airflow
+    <<: *entorno-producto
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_BD_USUARIO:-airflow}:${AIRFLOW_BD_CLAVE:-airflow}@bd-airflow/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    # Sin intervención manual: el DAG no puede quedar pausado al crearse.
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: /opt/novamercado/dags
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-novamercado_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_ISSUER: novamercado
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    # Laptop: un reentrenamiento a la vez y un solo worker de la API de Airflow.
+    AIRFLOW__CORE__PARALLELISM: "2"
+    AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG: "1"
+    AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG: "1"
+    AIRFLOW__API__WORKERS: "1"
+  volumes:
+    - ./dags:/opt/novamercado/dags:ro
+    - ./data/publicados:/datos/publicados:ro
+    # Volumen y no carpeta: los logs son miles de archivos que OneDrive intentaría sincronizar.
+    - logs-airflow:/opt/airflow/logs
+  user: "50000:0"
+  depends_on: &depende-airflow
+    bd-airflow:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   # Base del producto: solicitudes, predicciones, correcciones y observaciones (D-004).
   bd-producto:
@@ -102,6 +138,9 @@ services:
     environment:
       <<: *entorno-producto
       NOVAMERCADO_COPIA_MODELO: /var/lib/novamercado/modelo/vigente.joblib
+      NOVAMERCADO_AIRFLOW_URL: http://airflow-apiserver:8080
+      NOVAMERCADO_AIRFLOW_USUARIO: ${AIRFLOW_USUARIO:-airflow}
+      NOVAMERCADO_AIRFLOW_CLAVE: ${AIRFLOW_CLAVE:-airflow}
     ports:
       - "8000:8000"
     volumes:
@@ -121,8 +160,85 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # Base de metadatos de Airflow, separada de la del producto como pide el enunciado.
+  bd-airflow:
+    image: docker.io/library/postgres:16.10
+    environment:
+      POSTGRES_USER: ${AIRFLOW_BD_USUARIO:-airflow}
+      POSTGRES_PASSWORD: ${AIRFLOW_BD_CLAVE:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - bd-airflow:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d airflow"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Migra la base de metadatos y crea el usuario que usa la API para disparar el DAG.
+  airflow-init:
+    <<: *airflow
+    # Como root solo para dar el volumen de logs al usuario de Airflow; luego migra y crea el usuario.
+    entrypoint: /bin/bash
+    command: ["-c", "chown -R 50000:0 /opt/airflow/logs && exec /entrypoint airflow version"]
+    user: "0:0"
+    environment:
+      <<: *entorno-airflow
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USUARIO:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_CLAVE:-airflow}
+    restart: "no"
+
+  airflow-apiserver:
+    <<: *airflow
+    command: ["api-server"]
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    depends_on:
+      <<: *depende-airflow
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Con LocalExecutor las tareas corren aquí: el reentrenamiento usa este contenedor.
+  airflow-scheduler:
+    <<: *airflow
+    command: ["scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      <<: *depende-airflow
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow
+    command: ["dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type DagProcessorJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    depends_on:
+      <<: *depende-airflow
+      airflow-init:
+        condition: service_completed_successfully
+
 volumes:
   bd-producto:
   bd-mlflow:
   artefactos-mlflow:
   copia-modelo:
+  bd-airflow:
+  logs-airflow:
