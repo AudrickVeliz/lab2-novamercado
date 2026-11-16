@@ -25,6 +25,10 @@ class AirflowNoDisponible(RuntimeError):
     """Airflow no respondió o rechazó la solicitud."""
 
 
+class CredencialesFaltantes(RuntimeError):
+    """Faltan el usuario o la clave de Airflow en el entorno."""
+
+
 class ClienteAirflow:
     def __init__(self, url: str, usuario: str, clave: str, dag_id: str = DAG_REENTRENAMIENTO):
         self.url = url.rstrip("/")
@@ -35,10 +39,14 @@ class ClienteAirflow:
 
     @classmethod
     def desde_entorno(cls) -> ClienteAirflow:
+        """Las credenciales vienen del entorno (el .env del compose); no hay valores por defecto."""
+        faltantes = [v for v in ("NOVAMERCADO_AIRFLOW_USUARIO", "NOVAMERCADO_AIRFLOW_CLAVE") if not os.environ.get(v)]
+        if faltantes:
+            raise CredencialesFaltantes(f"Defina {', '.join(faltantes)}")
         return cls(
             os.environ.get("NOVAMERCADO_AIRFLOW_URL", "http://airflow-apiserver:8080"),
-            os.environ.get("NOVAMERCADO_AIRFLOW_USUARIO", "airflow"),
-            os.environ.get("NOVAMERCADO_AIRFLOW_CLAVE", "airflow"),
+            os.environ["NOVAMERCADO_AIRFLOW_USUARIO"],
+            os.environ["NOVAMERCADO_AIRFLOW_CLAVE"],
         )
 
     def disparar(self) -> str:
