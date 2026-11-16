@@ -38,10 +38,14 @@ jobs:
           pip install "numpy==2.5.3" "pandas==3.0.5"
           python tests/datos_sinteticos.py data/publicados
 
+      # El paso del README: las credenciales vienen del .env, no del repositorio.
+      - name: Crear el .env desde el ejemplo
+        run: cp .env.example .env
+
       - name: Construir las imágenes
         run: docker compose build
 
-      # Sin .env y sin ningún paso adicional, como el equipo docente.
+      # Siguiendo el README, sin ningún otro paso, como el equipo docente.
       - name: Levantar desde cero y medir hasta health ok
         run: |
           inicio=$(date +%s)
