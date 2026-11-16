@@ -1,6 +1,7 @@
-# Producto completo (ver D-010). Funciona sin cambios en Docker y en Podman rootless, y sin un
-# archivo .env: cada variable tiene un valor por defecto y .env.example documenta cómo cambiarla.
+# Producto completo (ver D-010). Funciona sin cambios en Docker y en Podman rootless.
+# Las credenciales no están en el repositorio: vienen del archivo .env (ver .env.example).
 #
+#   cp .env.example .env
 #   docker compose up -d --build
 #
 # Los archivos publicados se colocan en data/publicados/ antes de levantar.
@@ -14,7 +15,7 @@ x-producto: &producto
     dockerfile: Containerfile
   environment: &entorno-producto
     NOVAMERCADO_DATOS: /datos/publicados
-    NOVAMERCADO_BD_URL: postgresql+psycopg://${NOVAMERCADO_BD_USUARIO:-novamercado}:${NOVAMERCADO_BD_CLAVE:-novamercado}@bd-producto:5432/novamercado
+    NOVAMERCADO_BD_URL: postgresql+psycopg://${NOVAMERCADO_BD_USUARIO:?falta NOVAMERCADO_BD_USUARIO en .env (copie .env.example como .env)}:${NOVAMERCADO_BD_CLAVE:?falta NOVAMERCADO_BD_CLAVE en .env (copie .env.example como .env)}@bd-producto:5432/novamercado
     MLFLOW_TRACKING_URI: http://mlflow:5000
     MLFLOW_DISABLE_AGENT_HINT: "1"
   volumes:
@@ -30,14 +31,14 @@ x-airflow: &airflow
     <<: *entorno-producto
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
-    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_BD_USUARIO:-airflow}:${AIRFLOW_BD_CLAVE:-airflow}@bd-airflow/airflow
-    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_BD_USUARIO:?falta AIRFLOW_BD_USUARIO en .env (copie .env.example como .env)}:${AIRFLOW_BD_CLAVE:?falta AIRFLOW_BD_CLAVE en .env (copie .env.example como .env)}@bd-airflow/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY?falta AIRFLOW_FERNET_KEY en .env (copie .env.example como .env)}
     # Sin intervención manual: el DAG no puede quedar pausado al crearse.
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__CORE__DAGS_FOLDER: /opt/novamercado/dags
     AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-novamercado_jwt_secret}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?falta AIRFLOW_JWT_SECRET en .env (copie .env.example como .env)}
     AIRFLOW__API_AUTH__JWT_ISSUER: novamercado
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
     # Laptop: un reentrenamiento a la vez y un solo worker de la API de Airflow.
@@ -61,8 +62,8 @@ services:
   bd-producto:
     image: docker.io/library/postgres:16.10
     environment:
-      POSTGRES_USER: ${NOVAMERCADO_BD_USUARIO:-novamercado}
-      POSTGRES_PASSWORD: ${NOVAMERCADO_BD_CLAVE:-novamercado}
+      POSTGRES_USER: ${NOVAMERCADO_BD_USUARIO:?falta NOVAMERCADO_BD_USUARIO en .env (copie .env.example como .env)}
+      POSTGRES_PASSWORD: ${NOVAMERCADO_BD_CLAVE:?falta NOVAMERCADO_BD_CLAVE en .env (copie .env.example como .env)}
       POSTGRES_DB: novamercado
     volumes:
       - bd-producto:/var/lib/postgresql/data
@@ -76,8 +77,8 @@ services:
   bd-mlflow:
     image: docker.io/library/postgres:16.10
     environment:
-      POSTGRES_USER: ${MLFLOW_BD_USUARIO:-mlflow}
-      POSTGRES_PASSWORD: ${MLFLOW_BD_CLAVE:-mlflow}
+      POSTGRES_USER: ${MLFLOW_BD_USUARIO:?falta MLFLOW_BD_USUARIO en .env (copie .env.example como .env)}
+      POSTGRES_PASSWORD: ${MLFLOW_BD_CLAVE:?falta MLFLOW_BD_CLAVE en .env (copie .env.example como .env)}
       POSTGRES_DB: mlflow
     volumes:
       - bd-mlflow:/var/lib/postgresql/data
@@ -97,7 +98,7 @@ services:
       - server
       - --host=0.0.0.0
       - --port=5000
-      - --backend-store-uri=postgresql+psycopg://${MLFLOW_BD_USUARIO:-mlflow}:${MLFLOW_BD_CLAVE:-mlflow}@bd-mlflow:5432/mlflow
+      - --backend-store-uri=postgresql+psycopg://${MLFLOW_BD_USUARIO:?falta MLFLOW_BD_USUARIO en .env (copie .env.example como .env)}:${MLFLOW_BD_CLAVE:?falta MLFLOW_BD_CLAVE en .env (copie .env.example como .env)}@bd-mlflow:5432/mlflow
       # Los artefactos los guarda y sirve el propio servidor: los clientes no comparten carpetas.
       - --serve-artifacts
       - --artifacts-destination=/mlflow/artefactos
@@ -139,8 +140,8 @@ services:
       <<: *entorno-producto
       NOVAMERCADO_COPIA_MODELO: /var/lib/novamercado/modelo/vigente.joblib
       NOVAMERCADO_AIRFLOW_URL: http://airflow-apiserver:8080
-      NOVAMERCADO_AIRFLOW_USUARIO: ${AIRFLOW_USUARIO:-airflow}
-      NOVAMERCADO_AIRFLOW_CLAVE: ${AIRFLOW_CLAVE:-airflow}
+      NOVAMERCADO_AIRFLOW_USUARIO: ${AIRFLOW_USUARIO:?falta AIRFLOW_USUARIO en .env (copie .env.example como .env)}
+      NOVAMERCADO_AIRFLOW_CLAVE: ${AIRFLOW_CLAVE:?falta AIRFLOW_CLAVE en .env (copie .env.example como .env)}
     ports:
       - "8000:8000"
     volumes:
@@ -164,8 +165,8 @@ services:
   bd-airflow:
     image: docker.io/library/postgres:16.10
     environment:
-      POSTGRES_USER: ${AIRFLOW_BD_USUARIO:-airflow}
-      POSTGRES_PASSWORD: ${AIRFLOW_BD_CLAVE:-airflow}
+      POSTGRES_USER: ${AIRFLOW_BD_USUARIO:?falta AIRFLOW_BD_USUARIO en .env (copie .env.example como .env)}
+      POSTGRES_PASSWORD: ${AIRFLOW_BD_CLAVE:?falta AIRFLOW_BD_CLAVE en .env (copie .env.example como .env)}
       POSTGRES_DB: airflow
     volumes:
       - bd-airflow:/var/lib/postgresql/data
@@ -186,8 +187,8 @@ services:
       <<: *entorno-airflow
       _AIRFLOW_DB_MIGRATE: "true"
       _AIRFLOW_WWW_USER_CREATE: "true"
-      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USUARIO:-airflow}
-      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_CLAVE:-airflow}
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_USUARIO:?falta AIRFLOW_USUARIO en .env (copie .env.example como .env)}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_CLAVE:?falta AIRFLOW_CLAVE en .env (copie .env.example como .env)}
     restart: "no"
 
   airflow-apiserver:

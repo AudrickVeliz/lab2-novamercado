@@ -132,3 +132,20 @@ def test_airflow_que_no_responde():
         cliente.disparar()
     with pytest.raises(AirflowNoDisponible):
         cliente.verificar()
+
+
+def test_sin_credenciales_en_el_entorno_no_arranca(monkeypatch):
+    from novamercado.orquestador import CredencialesFaltantes
+
+    monkeypatch.delenv("NOVAMERCADO_AIRFLOW_USUARIO", raising=False)
+    monkeypatch.setenv("NOVAMERCADO_AIRFLOW_CLAVE", "x")
+    with pytest.raises(CredencialesFaltantes, match="NOVAMERCADO_AIRFLOW_USUARIO"):
+        ClienteAirflow.desde_entorno()
+
+
+def test_lee_las_credenciales_del_entorno(monkeypatch):
+    monkeypatch.setenv("NOVAMERCADO_AIRFLOW_USUARIO", "usuario")
+    monkeypatch.setenv("NOVAMERCADO_AIRFLOW_CLAVE", "clave")
+
+    cliente = ClienteAirflow.desde_entorno()
+    assert (cliente.usuario, cliente.clave) == ("usuario", "clave")
