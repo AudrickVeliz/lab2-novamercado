@@ -11,7 +11,7 @@ from novamercado.limpieza import (
     limpiar_prediccion,
 )
 
-from conftest import FAMILIAS
+from datos_sinteticos import FAMILIAS
 
 
 def acciones(resultado):
