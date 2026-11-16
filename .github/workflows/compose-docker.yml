@@ -97,6 +97,13 @@ jobs:
           jq -e 'has("promovido") and has("motivo")' /tmp/estado.json
           test "$(curl -s -o /dev/null -w '%{http_code}' $API/admin/reentrenar/no-existe)" = "404"
 
+      # La API debe poder cargar un modelo entrenado dentro de Airflow (otra imagen), esté o no
+      # promovido: así se detecta una dependencia que falte para usarlo sin reinicio.
+      - name: La API carga el modelo que entrenó Airflow
+        run: |
+          docker compose exec -T api python -c "from novamercado.registro_modelos import cargar_version; print(type(cargar_version('2')).__name__)" | tee /tmp/carga.txt
+          grep -q "ModeloEntrenado" /tmp/carga.txt
+
       - name: Interrupción temporal de MLflow
         run: |
           docker compose stop mlflow

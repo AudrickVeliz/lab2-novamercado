@@ -9,7 +9,10 @@ description = "Servicio de pronóstico diario de ventas para NovaMercado"
 requires-python = ">=3.12,<3.13"
 # Versiones exactas, iguales a las restricciones de Airflow 3.3.2: local, CI y
 # contenedores usan las mismas librerías. Cada componente agrega las suyas en su PR.
+# dill: los modelos que entrena Airflow lo referencian al serializarse (D-009); la API lo necesita
+# para cargarlos.
 dependencies = [
+    "dill==0.4.1",
     "fastapi==0.136.3",
     "mlflow-skinny==3.17.2",
     "numpy==2.5.3",
