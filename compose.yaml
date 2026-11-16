@@ -110,7 +110,9 @@ services:
       # El ejecutor de trabajos de MLflow 3 (evaluación de GenAI) no se usa y ocupa ~2 GB y una CPU.
       MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
     ports:
-      - "5000:5000"
+      # Solo en la máquina: MLflow no tiene autenticación y la API deserializa los modelos que
+      # registra; desde la red, cualquiera podría promover uno malicioso (D-010).
+      - "127.0.0.1:5000:5000"
     volumes:
       - artefactos-mlflow:/mlflow/artefactos
     healthcheck:
@@ -143,6 +145,7 @@ services:
       NOVAMERCADO_AIRFLOW_USUARIO: ${AIRFLOW_USUARIO:?falta AIRFLOW_USUARIO en .env (copie .env.example como .env)}
       NOVAMERCADO_AIRFLOW_CLAVE: ${AIRFLOW_CLAVE:?falta AIRFLOW_CLAVE en .env (copie .env.example como .env)}
     ports:
+      # El servicio del contrato: en todas las interfaces, para quien lo consuma.
       - "8000:8000"
     volumes:
       - ./data/publicados:/datos/publicados:ro
@@ -195,7 +198,8 @@ services:
     <<: *airflow
     command: ["api-server"]
     ports:
-      - "8080:8080"
+      # Interfaz de administración: solo en la máquina (D-010).
+      - "127.0.0.1:8080:8080"
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
       interval: 15s
