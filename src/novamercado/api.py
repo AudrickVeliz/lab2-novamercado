@@ -18,15 +18,21 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from fastapi import FastAPI, Request
+from pydantic import BaseModel
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from novamercado.catalogos import cargar_catalogos, cargar_historico, carpeta_datos
 from novamercado.contrato import (
+    EstadoReentrenamiento,
     PrediccionFamilia,
+    Rechazo,
+    RespuestaDisparo,
+    RespuestaModelo,
     RespuestaObservacion,
     RespuestaPrediccion,
+    RespuestaSalud,
     SolicitudObservacion,
     SolicitudPrediccion,
 )
@@ -108,25 +114,43 @@ class Dependencias:
 def crear_app(dependencias: Dependencias) -> FastAPI:
     app = FastAPI(title="Servicio de pronóstico de NovaMercado")
 
-    @app.post("/v1/prediccion")
+    @app.post(
+        "/v1/prediccion",
+        response_model=RespuestaPrediccion,
+        responses=_ERRORES_DE_SOLICITUD,
+        openapi_extra=_cuerpo_documentado(SolicitudPrediccion),
+    )
     async def prediccion(request: Request) -> JSONResponse:
+        """Pronóstico de un día para una tienda. Repara, advierte o rechaza los datos defectuosos (D-003)."""
         cuerpo = await _leer_cuerpo(request)
         return await run_in_threadpool(_atender_prediccion, dependencias, cuerpo)
 
-    @app.post("/v1/observaciones")
+    @app.post(
+        "/v1/observaciones",
+        response_model=RespuestaObservacion,
+        responses=_ERRORES_DE_SOLICITUD,
+        openapi_extra=_cuerpo_documentado(SolicitudObservacion),
+    )
     async def observaciones(request: Request) -> JSONResponse:
+        """Ventas reales de un día. registros_guardados cuenta solo los registros nuevos o modificados."""
         cuerpo = await _leer_cuerpo(request)
         return await run_in_threadpool(_atender_observacion, dependencias, cuerpo)
 
-    @app.get("/modelo")
+    @app.get("/modelo", response_model=RespuestaModelo, responses={503: {"model": Rechazo, "description": SIN_MODELO}})
     def modelo() -> JSONResponse:
+        """Modelo vigente que usa el servicio."""
         predictor = dependencias.predictor()
         if predictor is None:
             return _error(503, SIN_MODELO)
         return JSONResponse({"nombre": predictor.nombre, "alias": predictor.alias, "version": predictor.version})
 
-    @app.get("/health")
+    @app.get(
+        "/health",
+        response_model=RespuestaSalud,
+        responses={503: {"model": RespuestaSalud, "description": "No hay un modelo cargado"}},
+    )
     def health() -> JSONResponse:
+        """ok si todo funciona; degradado con el motivo si falla la base, MLflow o Airflow."""
         fallas = _fallas(dependencias.chequeos)
         if dependencias.predictor() is None:
             motivo = "; ".join(["No hay un modelo cargado", *fallas])
@@ -135,8 +159,14 @@ def crear_app(dependencias: Dependencias) -> FastAPI:
             return JSONResponse({"estado": "degradado", "motivo": "; ".join(fallas)})
         return JSONResponse({"estado": "ok"})
 
-    @app.post("/admin/reentrenar")
+    @app.post(
+        "/admin/reentrenar",
+        status_code=202,
+        response_model=RespuestaDisparo,
+        responses={503: {"model": Rechazo, "description": "No se pudo iniciar: Airflow no responde"}},
+    )
     def reentrenar() -> JSONResponse:
+        """Dispara el DAG de reentrenamiento. No lleva cuerpo."""
         try:
             if dependencias.orquestador is None:
                 raise AirflowNoDisponible("no hay orquestador configurado")
@@ -146,11 +176,46 @@ def crear_app(dependencias: Dependencias) -> FastAPI:
             return _error(503, f"No se pudo iniciar el reentrenamiento: {error}")
         return JSONResponse({"id": id}, status_code=202)
 
-    @app.get("/admin/reentrenar/{id}")
+    @app.get(
+        "/admin/reentrenar/{id}",
+        response_model=EstadoReentrenamiento,
+        responses={
+            404: {"model": Rechazo, "description": "El id no existe"},
+            503: {"model": Rechazo, "description": "Airflow no responde y no hay resultado registrado"},
+        },
+    )
     def estado_reentrenamiento(id: str) -> JSONResponse:
+        """en_curso, exitoso o fallido; al terminar incluye promovido, version (la vigente) y motivo."""
         return _estado_reentrenamiento(dependencias, id)
 
     return app
+
+
+# Los endpoints leen el cuerpo crudo para poder registrar incluso un JSON inválido (D-005), así que
+# FastAPI no infiere el contrato: se declara aquí para la documentación (/docs y /openapi.json).
+_ERRORES_DE_SOLICITUD = {
+    422: {"model": Rechazo, "description": "La solicitud no se puede atender sin inventar datos (D-003)"},
+    503: {"model": Rechazo, "description": "Sin modelo cargado, el modelo falló o no se pudo registrar"},
+}
+
+
+def _cuerpo_documentado(modelo: type[BaseModel]) -> dict[str, Any]:
+    """El cuerpo del contrato para OpenAPI, con las definiciones anidadas incluidas en el lugar."""
+    esquema = modelo.model_json_schema()
+    definiciones = esquema.pop("$defs", {})
+
+    def incluir(nodo: Any) -> Any:
+        if isinstance(nodo, dict):
+            if "$ref" in nodo:
+                return incluir(definiciones[nodo["$ref"].rsplit("/", 1)[-1]])
+            return {clave: incluir(valor) for clave, valor in nodo.items()}
+        if isinstance(nodo, list):
+            return [incluir(valor) for valor in nodo]
+        return nodo
+
+    esquema = incluir(esquema)
+    esquema["description"] = "Contrato del Anexo. Las desviaciones se reparan, se advierten o se rechazan (D-003)."
+    return {"requestBody": {"required": True, "content": {"application/json": {"schema": esquema}}}}
 
 
 def _estado_reentrenamiento(dependencias: Dependencias, id: str) -> JSONResponse:
