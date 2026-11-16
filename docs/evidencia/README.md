@@ -16,7 +16,7 @@ Generada con el producto levantado desde cero (`docker compose up`) y los datos 
 | [mlflow-experimento.png](capturas/mlflow-experimento.png) | Experimento `novamercado-ventas`: un run por reentrenamiento, con su dataset de entrenamiento (linaje); el primero lo registró el arranque inicial y los demás, Airflow |
 | [mlflow-modelo.png](capturas/mlflow-modelo.png) | Modelos de cada reentrenamiento, con sus métricas (costo, MAE, RMSE) y las versiones v1–v6 de `novamercado-ventas` |
 | [airflow-dag.png](capturas/airflow-dag.png) | Las 5 ejecuciones del DAG `reentrenamiento`, todas exitosas, de 15 a 28 s |
-| [api-docs.png](capturas/api-docs.png) | Los endpoints del Anexo en la documentación de la API (`/docs`) |
+| [api-docs.png](capturas/api-docs.png) | La documentación de la API (`/docs`): el contrato del Anexo (cuerpos, respuestas 200, 422 y 503 y esquemas) y una ejecución real de `POST /v1/prediccion` que responde con `version_modelo: "6"` |
 
 Para regenerar los archivos con el producto levantado:
 
