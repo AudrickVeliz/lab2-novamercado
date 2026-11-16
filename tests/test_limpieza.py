@@ -129,7 +129,7 @@ def test_e03_repara_promocion_entera(valor, prediccion, referencia):
     assert acciones(r) == [("familias[0].en_promocion", "reparar")]
 
 
-@pytest.mark.parametrize("valor", [-1, 2.5, "dos", "", None, True])
+@pytest.mark.parametrize("valor", [-1, 2.5, "dos", "", None, True, 2**31, 10**30, "9" * 40])
 def test_e03_promocion_invalida_asume_cero(valor, prediccion, referencia):
     prediccion["familias"][3]["en_promocion"] = valor
     r = limpiar_prediccion(prediccion, referencia)
@@ -351,7 +351,7 @@ def test_e10_repara_numeros_enteros_con_formato(valor, esperado, observacion, re
     assert acciones(r) == [("ventas[0].ventas", "reparar")]
 
 
-@pytest.mark.parametrize("valor", ["12,5", "0,5", "1,23,4", "mil", "", None, True, "1e3"])
+@pytest.mark.parametrize("valor", ["12,5", "0,5", "1,23,4", "mil", "", None, True, "1e3", 2**31, 10**30, "9" * 40])
 def test_e10_no_guarda_numeros_no_enteros_o_ilegibles(valor, observacion, referencia):
     observacion["ventas"][0]["ventas"] = valor
     r = limpiar_observacion(observacion, referencia)
