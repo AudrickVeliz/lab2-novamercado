@@ -16,7 +16,13 @@ from sqlalchemy import Engine
 
 from novamercado.catalogos import Catalogos, cargar_catalogos, cargar_historico, carpeta_datos
 from novamercado.entrenamiento import Datos, preparar_datos
-from novamercado.persistencia import crear_esquema, crear_motor, leer_observaciones, leer_promociones
+from novamercado.persistencia import (
+    crear_esquema,
+    crear_motor,
+    leer_observaciones,
+    leer_promociones,
+    registrar_reentrenamiento,
+)
 from novamercado.registro_modelos import (
     Resultado,
     huella,
@@ -54,6 +60,28 @@ def ejecutar(carpeta: str | Path | None = None, motor: Engine | None = None) -> 
     crear_esquema(motor)
     catalogos, datos, linaje = cargar(carpeta, motor)
     return reentrenar(datos, catalogos, linaje)
+
+
+def ejecutar_y_registrar(id: str, carpeta: str | Path | None = None, motor: Engine | None = None) -> Resultado:
+    """Lo que corre el DAG: reentrena y deja el resultado en la tabla reentrenamientos, también si falla."""
+    motor = motor or crear_motor()
+    try:
+        resultado = ejecutar(carpeta, motor)
+    except Exception as error:
+        _registrar_fallo(motor, id, error)
+        raise
+    registrar_reentrenamiento(motor, id, "exitoso", resultado.promovido, resultado.version, resultado.motivo)
+    return resultado
+
+
+def _registrar_fallo(motor: Engine, id: str, error: Exception) -> None:
+    try:
+        version = version_vigente()
+    except Exception:
+        log.exception("No se pudo consultar el modelo vigente al registrar el fallo")
+        version = None
+    motivo = f"El reentrenamiento falló ({type(error).__name__}): {error}; el modelo vigente no cambió"
+    registrar_reentrenamiento(motor, id, "fallido", False, version, motivo)
 
 
 def inicial(espera_maxima: float = ESPERA_MLFLOW_SEGUNDOS) -> Resultado | None:
