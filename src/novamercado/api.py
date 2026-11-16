@@ -59,6 +59,9 @@ COPIA_PREDETERMINADA = "/var/lib/novamercado/modelo/vigente.joblib"
 
 SIN_MODELO = "El modelo todavía no está disponible"
 SIN_REGISTRO = "No se pudo registrar la solicitud; intente de nuevo"
+# Una solicitud válida anida 3 niveles. Más que esto no es una solicitud de una tienda, y
+# recorrerla o guardarla podría agotar la pila (D-005).
+PROFUNDIDAD_MAXIMA = 32
 
 
 class Predictor(Protocol):
@@ -191,6 +194,8 @@ def _estado_reentrenamiento(dependencias: Dependencias, id: str) -> JSONResponse
 
 
 def _atender_prediccion(dependencias: Dependencias, cuerpo: Any) -> JSONResponse:
+    if isinstance(cuerpo, _CuerpoInvalido):
+        return _sin_atender(dependencias, "prediccion", cuerpo.texto, 422, cuerpo.motivo, "rechazada")
     try:
         resultado = limpiar_prediccion(cuerpo, dependencias.referencia)
     except SolicitudRechazada as rechazo:
@@ -222,6 +227,8 @@ def _atender_prediccion(dependencias: Dependencias, cuerpo: Any) -> JSONResponse
 
 
 def _atender_observacion(dependencias: Dependencias, cuerpo: Any) -> JSONResponse:
+    if isinstance(cuerpo, _CuerpoInvalido):
+        return _sin_atender(dependencias, "observaciones", cuerpo.texto, 422, cuerpo.motivo, "rechazada")
     try:
         resultado = limpiar_observacion(cuerpo, dependencias.referencia)
     except SolicitudRechazada as rechazo:
@@ -254,14 +261,39 @@ def _rechazar_constante(nombre: str) -> None:
     raise ValueError(f"{nombre} no es un número JSON válido")
 
 
+@dataclass(frozen=True)
+class _CuerpoInvalido:
+    """Un cuerpo que no se puede tratar como JSON; se guarda como texto y se rechaza."""
+
+    texto: str
+    motivo: str
+
+
 async def _leer_cuerpo(request: Request) -> Any:
-    """El JSON de la solicitud; si no es JSON válido, el texto tal como llegó (la limpieza lo rechaza)."""
     texto = (await request.body()).decode("utf-8", errors="replace")
     try:
         # NaN e Infinity no son JSON válido ni se pueden guardar en JSONB.
-        return json.loads(texto, parse_constant=_rechazar_constante)
-    except ValueError:
-        return texto
+        valor = json.loads(texto, parse_constant=_rechazar_constante)
+    except (ValueError, RecursionError):
+        # RecursionError: en algunas plataformas json.loads no admite miles de niveles de anidación.
+        return _CuerpoInvalido(texto, "El cuerpo de la solicitud no es JSON válido")
+    if _profundidad(valor) > PROFUNDIDAD_MAXIMA:
+        return _CuerpoInvalido(texto, f"El cuerpo de la solicitud anida más de {PROFUNDIDAD_MAXIMA} niveles")
+    return valor
+
+
+def _profundidad(valor: Any) -> int:
+    """Niveles de anidación, sin recursión: un cuerpo muy profundo no debe agotar la pila."""
+    maxima, pendientes = 0, [(valor, 1)]
+    while pendientes:
+        actual, nivel = pendientes.pop()
+        if isinstance(actual, (dict, list)):
+            maxima = max(maxima, nivel)
+            if maxima > PROFUNDIDAD_MAXIMA:
+                return maxima
+            hijos = actual.values() if isinstance(actual, dict) else actual
+            pendientes.extend((hijo, nivel + 1) for hijo in hijos)
+    return maxima
 
 
 def _fallas(chequeos: Mapping[str, Callable[[], None]]) -> list[str]:

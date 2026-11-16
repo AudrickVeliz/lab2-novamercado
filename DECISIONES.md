@@ -80,7 +80,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | E02 | Familia escrita de otra forma | Reparar | Se compara normalizada contra `familia_id` y contra el nombre de `familias.csv` (`"Frutas y Verduras"` → `frutas_verduras`). No hay coincidencia aproximada: `"lacteo"` no es inequívoco |
 | E02 | Familia no reconocida | Advertir | Se omite; el resto se pronostica. Si era una familia real mal escrita, E05 la completa |
 | E03 | Promoción como texto o decimal entero | Reparar | `"3"`, `2.0`, `"3,0"` → 3 |
-| E03 | Promoción negativa, con decimales reales, ilegible o ausente | Advertir | Se asume 0: la promoción del día solo llega en la solicitud y no hay otro dato |
+| E03 | Promoción negativa, con decimales reales, ilegible, ausente o mayor que 2³¹ − 1 | Advertir | Se asume 0: la promoción del día solo llega en la solicitud y no hay otro dato. Ninguna cantidad real de productos llega al límite de un entero de 32 bits, que es lo que guarda la base |
 | E04 | Fecha ISO con hora, año primero con `/`, o día/mes inequívoco | Reparar | `"2025-11-17T00:00:00"`, `"17/11/2025"`, `"11/17/2025"` (17 no puede ser mes) |
 | E04 | Fecha ambigua (día y mes ≤ 12 y distintos) | Advertir | Se asume día primero, la convención en Guatemala |
 | E04 | Fecha irreconocible o inexistente | Rechazar | `"2025-02-30"`, `"mañana"`, año de dos dígitos |
@@ -102,7 +102,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | E09 | Reenvío idéntico | — | Se responde 200 con `registros_guardados = 0` (lo resuelve la persistencia) |
 | E09 | Reenvío con un valor distinto | Reparar en la BD | Se toma como corrección: cambia el valor vigente, cuenta como modificado y el anterior queda en el historial |
 | E10 | Separador de miles o coma decimal | Reparar | Un separador seguido de exactamente 3 dígitos es de miles (`"1,234"` → 1234); con 1–2 dígitos es decimal (`"812,0"` → 812). Si aparecen punto y coma, el último es el decimal |
-| E10 | Decimal real o número ilegible | Advertir | No se guarda (`"12,5"`): las ventas son unidades enteras |
+| E10 | Decimal real, número ilegible o mayor que 2³¹ − 1 | Advertir | No se guarda (`"12,5"`, `"9999999999999"`): las ventas son unidades enteras y caben en un entero de 32 bits |
 | — | Familia repetida en la misma observación | Reparar si los valores son iguales; si no, **advertir** y no guardar esa familia | No se sabe cuál es el correcto |
 | — | Faltan familias | Advertir | Se guardan las recibidas; las faltantes pueden llegar en otro envío |
 | — | Valor atípico (más de 5 veces el máximo histórico de la tienda y la familia) | Advertir | Se guarda: puede ser un cambio real de demanda |
@@ -175,7 +175,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Situación | Respuesta | Se registra como |
 |---|---|---|
 | Solicitud aceptada | 200 según el Anexo | `ok`, `corregido` o `advertencia` |
-| Datos que no se pueden atender (D-003), cuerpo vacío o JSON inválido (incluidos `NaN` e `Infinity`) | 422 con `detail` en texto | `rechazada` |
+| Datos que no se pueden atender (D-003), cuerpo vacío o JSON inválido (incluidos `NaN` e `Infinity`), o cuerpo que anida más de 32 niveles | 422 con `detail` en texto | `rechazada` |
 | Sin modelo cargado (`/v1/prediccion`, `/modelo`) | 503 con `detail` | `no_atendida` |
 | El modelo falla al predecir | 503 con `detail` | `no_atendida` |
 | La base del producto no permite registrar | 503 con `detail`: no se responde sin registrar | — |
@@ -185,7 +185,9 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 
 - La API recibe sus dependencias al crearse (`crear_app`): los catálogos, el registro, una función que devuelve el **modelo vigente** y los chequeos de salud. El modelo se consulta en cada solicitud, así que puede cambiar sin reiniciar la API. La versión informada es la del modelo que hizo la predicción.
 - Los endpoints leen el cuerpo crudo y delegan en `novamercado.limpieza`, así el mismo 422 con `detail` en texto cubre tanto el JSON inválido como los datos defectuosos, y la solicitud cruda siempre queda guardada.
-- El carácter NUL se reemplaza antes de guardar el cuerpo, porque JSONB no lo admite.
+- El carácter NUL se reemplaza en todo el texto que viene de la solicitud (cuerpo, correcciones, motivo y campos ignorados), porque PostgreSQL no lo admite en `TEXT` ni en `JSONB`.
+- **Robustez ante problemas fuera del catálogo** (`tests/test_robustez.py`): miles de solicitudes deformadas al azar, con semilla fija, contra la limpieza, la API y PostgreSQL. La limpieza solo puede reparar, advertir o rechazar, y la API solo puede responder 200 o 422 por los datos. Esta prueba encontró tres fallas que ya están corregidas: el JSON anidado sin límite (500), el NUL dentro de las correcciones (503) y los enteros fuera de rango (503).
+- **Profundidad máxima de 32 niveles** (una solicitud válida tiene 3), medida sin recursión. En Windows `json.loads` corta los cuerpos de miles de niveles con `RecursionError`, pero en Linux los lee, y después recorrerlos o guardarlos agotaba la pila; el límite hace que el resultado no dependa de la plataforma. El CI en Linux lo detectó.
 - Las observaciones no necesitan modelo: se atienden aunque no haya ninguno cargado.
 - Las dependencias se instalan con las restricciones de Airflow 3.3.2 (`--constraint`), que fijan también las transitivas.
 

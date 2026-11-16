@@ -252,3 +252,20 @@ def test_registra_y_actualiza_el_resultado_de_un_reentrenamiento(motor):
     fila = leer_reentrenamiento(motor, "manual__1")
     assert (fila["estado"], fila["promovido"], fila["version"]) == ("exitoso", True, "4")
     assert contar(motor, reentrenamientos) == 1
+
+
+def test_guarda_el_caracter_nul_en_todo_el_texto_de_la_solicitud(motor, prediccion, referencia):
+    nul = chr(0)
+    prediccion["familias"].append({"familia_id": "pan" + nul, "en_promocion": 1})
+    prediccion["campo" + nul] = "x"
+    resultado = limpiar_prediccion(copy.deepcopy(prediccion), referencia)
+    respuesta = RespuestaPrediccion(
+        tienda_id=5, fecha=dt.date(2025, 11, 17), version_modelo="1",
+        predicciones=[PrediccionFamilia(familia_id="abarrotes", venta_esperada=1.0, cantidad_sugerida=1)],
+        calidad=resultado.calidad,
+    )
+    registrar_prediccion(motor, prediccion, resultado, respuesta, "m")
+    registrar_rechazo(motor, "prediccion", prediccion, "motivo con" + nul)
+
+    assert contar(motor, solicitudes) == 2
+    assert all(nul not in c["detalle"] for c in filas(motor, correcciones, correcciones.c.id))

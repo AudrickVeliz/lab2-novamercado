@@ -26,6 +26,7 @@ import pandas as pd
 
 from novamercado.catalogos import Catalogos
 from novamercado.contrato import (
+    MAXIMO_ENTERO,
     Calidad,
     FamiliaPromocion,
     ObservacionCalidad,
@@ -375,7 +376,7 @@ def _promocion(campos: dict[str, _Campo], ruta_item: str, registro: _Registro) -
         registro.advertir(ruta_item, "no trae en_promocion; se asumió 0")
         return 0
     promocion, reinterpretado = _entero_reparado(campo.valor)
-    if promocion is None or promocion < 0:
+    if promocion is None or not 0 <= promocion <= MAXIMO_ENTERO:
         registro.advertir(campo.ruta, f"en_promocion inválida ({_formato(campo.valor)}); se asumió 0")
         return 0
     if reinterpretado:
@@ -441,6 +442,7 @@ def _ventas(campos: dict[str, _Campo], ruta_item: str, familia: str, registro: _
         "ilegibles" if numero is None
         else "negativas" if numero < 0
         else "no enteras" if not numero.is_integer()
+        else "fuera de rango" if numero > MAXIMO_ENTERO
         else None
     )
     if problema:

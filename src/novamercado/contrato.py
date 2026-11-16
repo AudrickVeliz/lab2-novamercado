@@ -15,6 +15,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Ninguna cantidad real de productos o de unidades de un día llega al límite de un entero de
+# 32 bits, que es lo que guarda la base: un valor mayor se trata como inválido (D-003).
+MAXIMO_ENTERO = 2**31 - 1
+
 Accion = Literal["reparar", "advertir"]
 EstadoCalidad = Literal["ok", "corregido", "advertencia"]
 
@@ -28,7 +32,7 @@ class _Estricto(BaseModel):
 
 class FamiliaPromocion(_Estricto):
     familia_id: str = Field(min_length=1)
-    en_promocion: int = Field(ge=0)
+    en_promocion: int = Field(ge=0, le=MAXIMO_ENTERO)
 
 
 class SolicitudPrediccion(_Estricto):
@@ -39,7 +43,7 @@ class SolicitudPrediccion(_Estricto):
 
 class VentaFamilia(_Estricto):
     familia_id: str = Field(min_length=1)
-    ventas: int = Field(ge=0)
+    ventas: int = Field(ge=0, le=MAXIMO_ENTERO)
 
 
 class SolicitudObservacion(_Estricto):

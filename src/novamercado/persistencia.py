@@ -316,10 +316,10 @@ def _insertar_solicitud(
             endpoint=endpoint,
             cuerpo=_sin_nulos(cuerpo),
             estado=estado,
-            motivo_rechazo=motivo_rechazo,
+            motivo_rechazo=_sin_nulos(motivo_rechazo),
             tienda_id=tienda_id,
             fecha=fecha,
-            campos_ignorados=ignorados or [],
+            campos_ignorados=_sin_nulos(ignorados or []),
         )
         .returning(solicitudes.c.id)
     ).scalar_one()
@@ -329,12 +329,12 @@ def _insertar_correcciones(conexion: Connection, solicitud_id: int, observacione
     if observaciones_calidad:
         conexion.execute(
             insert(correcciones),
-            [{"solicitud_id": solicitud_id, **o.model_dump()} for o in observaciones_calidad],
+            [{"solicitud_id": solicitud_id, **_sin_nulos(o.model_dump())} for o in observaciones_calidad],
         )
 
 
 def _sin_nulos(valor: Any) -> Any:
-    """Reemplaza el carácter NUL, que JSONB no admite, para que la solicitud se pueda guardar."""
+    """Reemplaza el carácter NUL, que PostgreSQL no admite en TEXT ni en JSONB, para poder guardar la solicitud."""
     if isinstance(valor, str):
         return valor.replace(chr(0), chr(0xFFFD))
     if isinstance(valor, list):

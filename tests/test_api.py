@@ -148,6 +148,34 @@ def test_cuerpo_invalido_responde_422(referencia, contenido):
     assert len(registro.rechazos) == 1
 
 
+def test_json_anidado_sin_limite_responde_422(referencia):
+    # json.loads lanza RecursionError, no ValueError: antes respondía 500.
+    api, registro = cliente(referencia)
+    profundo = "[" * 100_000 + "]" * 100_000
+    r = api.post("/v1/prediccion", content=profundo, headers={"Content-Type": "application/json"})
+
+    assert r.status_code == 422
+    assert len(registro.rechazos) == 1
+
+
+def test_json_demasiado_profundo_se_rechaza_en_cualquier_plataforma(referencia):
+    # En Linux json.loads sí lee miles de niveles: el límite se aplica después, sin recursión.
+    api, registro = cliente(referencia)
+    profundo = '{"tienda_id": 5, "a": ' + '{"b": ' * 50 + "1" + "}" * 50 + "}"
+    r = api.post("/v1/observaciones", content=profundo, headers={"Content-Type": "application/json"})
+
+    assert r.status_code == 422
+    assert "anida más de 32 niveles" in r.json()["detail"]
+    assert registro.rechazos[0][1] == profundo
+
+
+def test_json_invalido_explica_el_motivo(referencia):
+    api, _ = cliente(referencia)
+    r = api.post("/v1/prediccion", content="{roto", headers={"Content-Type": "application/json"})
+
+    assert r.json() == {"detail": "El cuerpo de la solicitud no es JSON válido"}
+
+
 def test_sin_modelo_responde_503_y_registra_la_solicitud(referencia, prediccion):
     api, registro = cliente(referencia, predictor=None)
     r = api.post("/v1/prediccion", json=prediccion)
