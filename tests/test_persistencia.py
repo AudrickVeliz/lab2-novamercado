@@ -14,6 +14,9 @@ from novamercado.persistencia import (
     correcciones,
     leer_observaciones,
     leer_promociones,
+    leer_reentrenamiento,
+    reentrenamientos,
+    registrar_reentrenamiento,
     crear_esquema,
     crear_motor,
     metadata,
@@ -238,3 +241,14 @@ def test_lee_la_promocion_de_la_ultima_prediccion(motor, prediccion, referencia)
     promociones = leer_promociones(motor)
     assert len(promociones) == 4
     assert promociones.set_index("familia_id").loc["abarrotes", "en_promocion"] == 7
+
+
+def test_registra_y_actualiza_el_resultado_de_un_reentrenamiento(motor):
+    assert leer_reentrenamiento(motor, "manual__1") is None
+
+    registrar_reentrenamiento(motor, "manual__1", "fallido", False, None, "falló")
+    registrar_reentrenamiento(motor, "manual__1", "exitoso", True, "4", "Costo en validación 18 210 vs 19 940 del vigente")
+
+    fila = leer_reentrenamiento(motor, "manual__1")
+    assert (fila["estado"], fila["promovido"], fila["version"]) == ("exitoso", True, "4")
+    assert contar(motor, reentrenamientos) == 1
