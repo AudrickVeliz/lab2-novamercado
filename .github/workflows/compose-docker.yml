@@ -1,0 +1,130 @@
+# Recorre en Docker el camino del equipo docente: clonar, colocar los archivos publicados y levantar.
+# Usa archivos sintéticos, porque los publicados no están en el repositorio. Solo corre si cambia
+# lo que afecta a los contenedores, porque tarda varios minutos.
+name: Compose en Docker
+
+on:
+  pull_request:
+    paths:
+      - compose.yaml
+      - Containerfile
+      - Containerfile.*
+      - .dockerignore
+      - pyproject.toml
+      - src/**
+      - dags/**
+      - tests/datos_sinteticos.py
+      - .github/workflows/compose-docker.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  API: http://localhost:8000
+
+jobs:
+  levantar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Colocar archivos publicados sintéticos
+        run: |
+          pip install "numpy==2.5.3" "pandas==3.0.5"
+          python tests/datos_sinteticos.py data/publicados
+
+      - name: Construir las imágenes
+        run: docker compose build
+
+      # Sin .env y sin ningún paso adicional, como el equipo docente.
+      - name: Levantar desde cero y medir hasta health ok
+        run: |
+          inicio=$(date +%s)
+          docker compose up -d
+          for intento in $(seq 1 120); do
+            if [ "$(curl -s -m 5 $API/health | jq -r .estado)" = "ok" ]; then
+              echo "health ok en $(( $(date +%s) - inicio )) s"; exit 0
+            fi
+            sleep 5
+          done
+          curl -s $API/health; exit 1
+
+      - name: Modelo vigente
+        run: |
+          curl -sf $API/modelo | tee /tmp/modelo.json
+          test "$(jq -r .nombre /tmp/modelo.json)" = "novamercado-ventas"
+          test "$(jq -r .alias /tmp/modelo.json)" = "vigente"
+          test "$(jq -r .version /tmp/modelo.json)" = "1"
+
+      - name: Predicción válida y defectuosa
+        run: |
+          cuerpo='{"tienda_id": "T05", "fecha": "28/08/2025", "familias": [{"familia_id": "ABARROTES", "en_promocion": "2"}, {"familia_id": "lacteos", "en_promocion": 0}]}'
+          curl -sf -X POST $API/v1/prediccion -H 'Content-Type: application/json' -d "$cuerpo" | tee /tmp/prediccion.json
+          test "$(jq -r .version_modelo /tmp/prediccion.json)" = "1"
+          test "$(jq -r .calidad.estado /tmp/prediccion.json)" = "advertencia"
+          test "$(jq '.predicciones | length' /tmp/prediccion.json)" = "4"
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST $API/v1/prediccion -H 'Content-Type: application/json' -d '{"tienda_id": 99}')" = "422"
+
+      - name: Observación idempotente
+        run: |
+          cuerpo='{"tienda_id": 5, "fecha": "2025-08-28", "ventas": [{"familia_id": "abarrotes", "ventas": "1,020"}, {"familia_id": "lacteos", "ventas": 260}, {"familia_id": "snacks", "ventas": -3}]}'
+          test "$(curl -sf -X POST $API/v1/observaciones -H 'Content-Type: application/json' -d "$cuerpo" | jq .registros_guardados)" = "2"
+          test "$(curl -sf -X POST $API/v1/observaciones -H 'Content-Type: application/json' -d "$cuerpo" | jq .registros_guardados)" = "0"
+
+      - name: Reentrenamiento por el endpoint de administración
+        run: |
+          curl -s -X POST -w '\n%{http_code}\n' $API/admin/reentrenar | tee /tmp/disparo.txt
+          test "$(tail -n 1 /tmp/disparo.txt)" = "202"
+          id=$(head -n 1 /tmp/disparo.txt | jq -r .id)
+          inicio=$(date +%s)
+          for intento in $(seq 1 120); do
+            curl -s "$API/admin/reentrenar/$id" > /tmp/estado.json
+            if [ "$(jq -r .estado /tmp/estado.json)" != "en_curso" ]; then break; fi
+            sleep 5
+          done
+          cat /tmp/estado.json; echo " ($(( $(date +%s) - inicio )) s)"
+          test "$(jq -r .estado /tmp/estado.json)" = "exitoso"
+          test "$(jq -r .version /tmp/estado.json)" != "null"
+          jq -e 'has("promovido") and has("motivo")' /tmp/estado.json
+          test "$(curl -s -o /dev/null -w '%{http_code}' $API/admin/reentrenar/no-existe)" = "404"
+
+      - name: Interrupción temporal de MLflow
+        run: |
+          docker compose stop mlflow
+          for intento in $(seq 1 60); do
+            if [ "$(curl -s -m 10 $API/health | jq -r .estado)" = "degradado" ]; then break; fi
+            sleep 1
+          done
+          test "$(curl -s -m 10 $API/health | jq -r .estado)" = "degradado"
+          curl -sf -X POST $API/v1/prediccion -H 'Content-Type: application/json' \
+            -d '{"tienda_id": 1, "fecha": "2025-08-29", "familias": []}' > /dev/null
+          docker compose start mlflow
+          for intento in $(seq 1 120); do
+            if [ "$(curl -s -m 10 $API/health | jq -r .estado)" = "ok" ]; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      - name: Detener y volver a levantar sin borrar los volúmenes
+        run: |
+          docker compose down
+          docker compose up -d
+          for intento in $(seq 1 120); do
+            if [ "$(curl -s -m 5 $API/health | jq -r .estado)" = "ok" ]; then break; fi
+            sleep 5
+          done
+          test "$(curl -s $API/health | jq -r .estado)" = "ok"
+          docker compose logs entrenamiento-inicial | grep -q "Ya hay un modelo vigente"
+          cuerpo='{"tienda_id": 5, "fecha": "2025-08-28", "ventas": [{"familia_id": "abarrotes", "ventas": 1020}]}'
+          test "$(curl -sf -X POST $API/v1/observaciones -H 'Content-Type: application/json' -d "$cuerpo" | jq .registros_guardados)" = "0"
+
+      - name: Mostrar logs si falló
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --tail=80
