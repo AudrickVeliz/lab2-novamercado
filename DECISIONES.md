@@ -367,3 +367,33 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Volver a iniciar `mlflow` | `/health = ok` en 5.2 s | < 2 min |
 | Reiniciar la API con `mlflow` detenido | Arranca con la copia local (v1), `degradado`, y predice | — |
 | Reentrenamiento manual con los mismos datos | 16 s; `No supera al vigente. Costo en validación 90 556 vs 90 556 del vigente`; la v2 queda registrada sin alias | 10 min, sin afectar al vigente |
+
+## D-011: reentrenamiento con Airflow y endpoints de administración
+
+**Fecha:** 2026-11-16
+
+**Contexto:** el enunciado pide un DAG de reentrenamiento que use el histórico y las observaciones registradas, disparado por `POST /admin/reentrenar` (202 con `id`, o 503 si no se puede iniciar), con su estado en `GET /admin/reentrenar/{id}` (`en_curso`, `exitoso` o `fallido`, y al terminar `promovido`, `version` y `motivo`; 404 si el `id` no existe). Cada reentrenamiento debe terminar en menos de 10 minutos, un fallo no debe afectar al vigente y la base de Airflow debe estar separada de la del producto.
+
+**Decisión:**
+
+- **Airflow 3.3.2** como en el Lab 1, adaptado a laptop: LocalExecutor sin Celery ni Redis; `airflow-apiserver` (puerto 8080), `airflow-scheduler`, `airflow-dag-processor` y `airflow-init`, con su propio PostgreSQL (`bd-airflow`). La imagen agrega el paquete del producto instalado con las mismas restricciones. El DAG no queda pausado al crearse.
+- **DAG `reentrenamiento`:** sin calendario (`schedule=None`), un dagRun a la vez, sin reintentos, `execution_timeout` de 9 minutos y `dagrun_timeout` de 10. Su única tarea llama a `reentrenamiento.ejecutar_y_registrar(run_id)`: el DAG solo orquesta.
+- **El `id` es el `dag_run_id` de Airflow.** La API crea el dagRun con la API REST de Airflow 3 (`POST /api/v2/dags/reentrenamiento/dagRuns`), con un token JWT que pide con usuario y clave y renueva si vence. El cliente usa solo la biblioteca estándar.
+- **El resultado queda en la base del producto** (tabla `reentrenamientos`): la tarea escribe `exitoso` con `promovido`, `version` y `motivo`, o `fallido` con el error y la versión vigente, antes de terminar.
+- **`GET /admin/reentrenar/{id}`:**
+  - Si hay resultado en la tabla, lo devuelve, aunque Airflow no responda.
+  - Si no hay, pregunta a Airflow: `queued` o `running` → `en_curso`; inexistente → 404; terminado sin resultado (por ejemplo, Airflow cortó la tarea) → `fallido` con la versión que tiene cargada la API, que no cambió.
+  - Si Airflow no responde y no hay resultado → 503.
+- **`/health`** agrega el chequeo de Airflow: `GET /api/v2/monitor/health`, con la base de metadatos y el scheduler sanos.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Resultado solo como XCom de Airflow | El resultado viviría solo en la metadata de Airflow, separado del resto de la operación |
+| Calendario semanal | Por reloj real, que no coincide con las fechas simuladas; el enunciado dispara por el endpoint |
+| Airflow `standalone` | La documentación de Airflow lo reserva para desarrollo |
+| Reintentos de la tarea | Un reintento podría pasar de los 10 minutos; el siguiente reentrenamiento ya reintenta |
+| Cliente HTTP con `requests` o `httpx` | Una dependencia más para cuatro llamadas |
+
+**Prueba en Docker:** el workflow `Compose en Docker` genera archivos publicados sintéticos (`tests/datos_sinteticos.py`) y recorre en GitHub Actions, con Docker, el camino del equipo docente: levantar desde cero, predicción válida y defectuosa, observación idempotente, reentrenamiento por `/admin`, interrupción de MLflow y reinicio conservando los volúmenes.

@@ -10,7 +10,7 @@ from novamercado.catalogos import COLUMNAS
 from novamercado.persistencia import crear_esquema, crear_motor, metadata
 from novamercado.registro_modelos import version_vigente
 
-from conftest import CATALOGOS
+from datos_sinteticos import CATALOGOS
 
 URL_PRUEBAS = os.environ.get("NOVAMERCADO_BD_PRUEBAS_URL")
 
@@ -83,3 +83,28 @@ def test_las_observaciones_con_promocion_conocida_entran_al_aprendizaje(motor, p
     _, datos, linaje = reentrenamiento.cargar(publicados, motor)
     assert linaje["observaciones_registradas"] == "1"
     assert datos.objetivos["fecha"].max() == nueva
+
+
+def test_ejecutar_y_registrar_deja_el_resultado_exitoso(motor, publicados, mlflow_local):
+    from novamercado.persistencia import leer_reentrenamiento
+
+    resultado = reentrenamiento.ejecutar_y_registrar("manual__1", publicados, motor)
+
+    fila = leer_reentrenamiento(motor, "manual__1")
+    assert (fila["estado"], fila["promovido"], fila["version"]) == ("exitoso", resultado.promovido, resultado.version)
+    assert fila["motivo"] == resultado.motivo
+
+
+def test_un_fallo_queda_registrado_y_no_toca_al_vigente(motor, publicados, mlflow_local):
+    from novamercado.persistencia import leer_reentrenamiento
+
+    reentrenamiento.ejecutar_y_registrar("manual__1", publicados, motor)
+    (publicados / "costos.csv").write_text("familia_id,costo_faltante\n", encoding="utf-8")
+
+    with pytest.raises(Exception):
+        reentrenamiento.ejecutar_y_registrar("manual__2", publicados, motor)
+
+    fila = leer_reentrenamiento(motor, "manual__2")
+    assert (fila["estado"], fila["promovido"], fila["version"]) == ("fallido", False, "1")
+    assert "CatalogoInvalido" in fila["motivo"] and "no cambió" in fila["motivo"]
+    assert version_vigente() == "1"

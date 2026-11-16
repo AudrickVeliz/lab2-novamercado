@@ -14,6 +14,7 @@ from typing import Any, Literal
 import pandas as pd
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     Column,
     Date,
     DateTime,
@@ -118,6 +119,21 @@ observaciones_historial = Table(
     Column("registrada_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
+# Resultado de cada ejecución del DAG de reentrenamiento (D-011). Mientras corre no hay fila:
+# el estado en curso lo informa Airflow.
+reentrenamientos = Table(
+    "reentrenamientos",
+    metadata,
+    Column("id", Text, primary_key=True),  # dag_run_id de Airflow
+    Column("estado", Text, nullable=False),  # exitoso o fallido
+    Column("promovido", Boolean, nullable=False),
+    Column("version", Text),  # vigente al terminar
+    Column("motivo", Text, nullable=False),
+    Column("terminado_en", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
+EstadoReentrenamiento = Literal["exitoso", "fallido"]
+
 
 class BaseDeDatosNoConfigurada(RuntimeError):
     """Falta la URL de conexión a la base del producto."""
@@ -174,6 +190,24 @@ def _tabla(motor: Engine, consulta: Select, columnas: list[str]) -> pd.DataFrame
         tabla = pd.DataFrame(conexion.execute(consulta).all(), columns=columnas)
     tabla["fecha"] = pd.to_datetime(tabla["fecha"])
     return tabla
+
+
+def registrar_reentrenamiento(
+    motor: Engine, id: str, estado: EstadoReentrenamiento, promovido: bool, version: str | None, motivo: str
+) -> None:
+    valores = {"estado": estado, "promovido": promovido, "version": version, "motivo": motivo}
+    with motor.begin() as conexion:
+        conexion.execute(
+            insert_pg(reentrenamientos)
+            .values(id=id, **valores)
+            .on_conflict_do_update(index_elements=["id"], set_={**valores, "terminado_en": func.now()})
+        )
+
+
+def leer_reentrenamiento(motor: Engine, id: str) -> dict[str, Any] | None:
+    with motor.connect() as conexion:
+        fila = conexion.execute(select(reentrenamientos).where(reentrenamientos.c.id == id)).first()
+    return dict(fila._mapping) if fila else None
 
 
 def registrar_rechazo(
@@ -333,3 +367,6 @@ class RegistroPostgres:
 
     def observacion(self, cuerpo: Any, resultado: Resultado[SolicitudObservacion]) -> int:
         return registrar_observacion(self.motor, cuerpo, resultado)
+
+    def reentrenamiento(self, id: str) -> dict[str, Any] | None:
+        return leer_reentrenamiento(self.motor, id)

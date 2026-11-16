@@ -1,0 +1,10 @@
+# Imagen de Airflow con el paquete del producto, que el DAG de reentrenamiento usa (ver D-011).
+# Se construye una vez, en lugar de instalar paquetes en cada arranque con
+# _PIP_ADDITIONAL_REQUIREMENTS, que la documentación oficial reserva para pruebas rápidas.
+FROM docker.io/apache/airflow:3.3.2-python3.12
+
+ARG RESTRICCIONES=https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt
+
+COPY --chown=airflow:root pyproject.toml /tmp/novamercado/pyproject.toml
+COPY --chown=airflow:root src /tmp/novamercado/src
+RUN pip install --no-cache-dir --constraint "$RESTRICCIONES" /tmp/novamercado

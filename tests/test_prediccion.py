@@ -7,7 +7,7 @@ import pytest
 from novamercado.contrato import FamiliaPromocion, SolicitudPrediccion
 from novamercado.prediccion import ModeloVigente, PredictorVentas
 
-from conftest import FAMILIAS
+from datos_sinteticos import FAMILIAS
 
 
 def solicitud(fecha=dt.date(2025, 8, 28), tienda=5):

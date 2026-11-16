@@ -9,6 +9,7 @@ from sqlalchemy.exc import OperationalError
 
 from novamercado.api import Dependencias, crear_app
 from novamercado.contrato import PrediccionFamilia
+from novamercado.orquestador import AirflowNoDisponible
 
 
 class PredictorFalso:
@@ -33,6 +34,7 @@ class RegistroFalso:
         self.falla = falla
         self.rechazos, self.predicciones, self.observaciones = [], [], []
         self.vigentes = {}
+        self.reentrenamientos = {}
 
     def _revisar(self):
         if self.falla:
@@ -57,10 +59,32 @@ class RegistroFalso:
         self.vigentes.update(nuevos)
         return cambiados
 
+    def reentrenamiento(self, id):
+        self._revisar()
+        return self.reentrenamientos.get(id)
 
-def cliente(referencia, predictor=PredictorFalso(), registro=None, chequeos=None):
+
+class OrquestadorFalso:
+    def __init__(self, caido=False):
+        self.caido = caido
+        self.estados = {}
+
+    def disparar(self):
+        if self.caido:
+            raise AirflowNoDisponible("Airflow no responde")
+        id = f"manual__{len(self.estados) + 1}"
+        self.estados[id] = "en_curso"
+        return id
+
+    def estado(self, id):
+        if self.caido:
+            raise AirflowNoDisponible("Airflow no responde")
+        return self.estados.get(id)
+
+
+def cliente(referencia, predictor=PredictorFalso(), registro=None, chequeos=None, orquestador=None):
     registro = registro or RegistroFalso()
-    app = crear_app(Dependencias(referencia, registro, lambda: predictor, chequeos or {}))
+    app = crear_app(Dependencias(referencia, registro, lambda: predictor, chequeos or {}, orquestador))
     return TestClient(app), registro
 
 
@@ -258,6 +282,99 @@ def test_el_modelo_vigente_puede_cambiar_sin_reiniciar(referencia, prediccion):
     vigente["predictor"] = PredictorFalso()
     assert api.get("/health").status_code == 200
     assert api.post("/v1/prediccion", json=prediccion).json()["version_modelo"] == "3"
+
+
+# POST /admin/reentrenar y GET /admin/reentrenar/{id}
+
+
+def test_reentrenar_responde_202_con_id_de_texto(referencia):
+    api, _ = cliente(referencia, orquestador=OrquestadorFalso())
+    r = api.post("/admin/reentrenar")
+
+    assert r.status_code == 202
+    assert isinstance(r.json()["id"], str) and r.json()["id"]
+
+
+def test_reentrenar_sin_airflow_responde_503(referencia):
+    api, _ = cliente(referencia, orquestador=OrquestadorFalso(caido=True))
+    r = api.post("/admin/reentrenar")
+
+    assert r.status_code == 503
+    assert "detail" in r.json()
+
+
+def test_reentrenar_sin_orquestador_responde_503(referencia):
+    api, _ = cliente(referencia)
+
+    assert api.post("/admin/reentrenar").status_code == 503
+
+
+def test_estado_en_curso_no_trae_resultado(referencia):
+    orquestador = OrquestadorFalso()
+    api, _ = cliente(referencia, orquestador=orquestador)
+    id = api.post("/admin/reentrenar").json()["id"]
+
+    assert api.get(f"/admin/reentrenar/{id}").json() == {"estado": "en_curso"}
+
+
+def test_estado_exitoso_trae_el_resultado_que_dejo_el_dag(referencia):
+    orquestador = OrquestadorFalso()
+    api, registro = cliente(referencia, orquestador=orquestador)
+    id = api.post("/admin/reentrenar").json()["id"]
+    registro.reentrenamientos[id] = {
+        "estado": "exitoso", "promovido": True, "version": "4",
+        "motivo": "Costo en validación 18 210 vs 19 940 del vigente",
+    }
+    orquestador.estados[id] = "exitoso"
+
+    assert api.get(f"/admin/reentrenar/{id}").json() == {
+        "estado": "exitoso", "promovido": True, "version": "4",
+        "motivo": "Costo en validación 18 210 vs 19 940 del vigente",
+    }
+
+
+def test_el_resultado_se_informa_aunque_airflow_este_caido(referencia):
+    orquestador = OrquestadorFalso()
+    api, registro = cliente(referencia, orquestador=orquestador)
+    id = api.post("/admin/reentrenar").json()["id"]
+    registro.reentrenamientos[id] = {"estado": "exitoso", "promovido": False, "version": "3", "motivo": "No supera"}
+    orquestador.caido = True
+
+    assert api.get(f"/admin/reentrenar/{id}").json()["estado"] == "exitoso"
+
+
+def test_fallo_registrado_sin_version_usa_la_vigente_de_la_api(referencia):
+    orquestador = OrquestadorFalso()
+    api, registro = cliente(referencia, orquestador=orquestador)
+    id = api.post("/admin/reentrenar").json()["id"]
+    registro.reentrenamientos[id] = {"estado": "fallido", "promovido": False, "version": None, "motivo": "falló"}
+
+    cuerpo = api.get(f"/admin/reentrenar/{id}").json()
+    assert (cuerpo["estado"], cuerpo["promovido"], cuerpo["version"]) == ("fallido", False, "3")
+
+
+def test_fallido_en_airflow_sin_resultado_informa_que_el_vigente_no_cambio(referencia):
+    orquestador = OrquestadorFalso()
+    api, _ = cliente(referencia, orquestador=orquestador)
+    id = api.post("/admin/reentrenar").json()["id"]
+    orquestador.estados[id] = "fallido"
+
+    cuerpo = api.get(f"/admin/reentrenar/{id}").json()
+    assert cuerpo["estado"] == "fallido" and cuerpo["promovido"] is False
+    assert cuerpo["version"] == "3"
+    assert "no cambió" in cuerpo["motivo"]
+
+
+def test_id_desconocido_responde_404(referencia):
+    api, _ = cliente(referencia, orquestador=OrquestadorFalso())
+
+    assert api.get("/admin/reentrenar/no-existe").status_code == 404
+
+
+def test_estado_con_airflow_caido_y_sin_resultado_responde_503(referencia):
+    api, _ = cliente(referencia, orquestador=OrquestadorFalso(caido=True))
+
+    assert api.get("/admin/reentrenar/manual__1").status_code == 503
 
 
 # Con la base de datos real
