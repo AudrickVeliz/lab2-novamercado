@@ -260,7 +260,8 @@ async def _leer_cuerpo(request: Request) -> Any:
     try:
         # NaN e Infinity no son JSON válido ni se pueden guardar en JSONB.
         return json.loads(texto, parse_constant=_rechazar_constante)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: un JSON anidado miles de niveles; se trata como un cuerpo inválido.
         return texto
 
 

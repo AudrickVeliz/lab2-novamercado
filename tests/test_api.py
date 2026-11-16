@@ -148,6 +148,16 @@ def test_cuerpo_invalido_responde_422(referencia, contenido):
     assert len(registro.rechazos) == 1
 
 
+def test_json_anidado_sin_limite_responde_422(referencia):
+    # json.loads lanza RecursionError, no ValueError: antes respondía 500.
+    api, registro = cliente(referencia)
+    profundo = "[" * 100_000 + "]" * 100_000
+    r = api.post("/v1/prediccion", content=profundo, headers={"Content-Type": "application/json"})
+
+    assert r.status_code == 422
+    assert len(registro.rechazos) == 1
+
+
 def test_sin_modelo_responde_503_y_registra_la_solicitud(referencia, prediccion):
     api, registro = cliente(referencia, predictor=None)
     r = api.post("/v1/prediccion", json=prediccion)
