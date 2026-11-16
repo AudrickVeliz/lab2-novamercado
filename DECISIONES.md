@@ -321,3 +321,49 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 - El primer arranque registró la v1: `Primer modelo. Costo en validación 90 556 vs 134 234 del baseline`.
 - El segundo arranque respondió `Ya hay un modelo vigente (v1): no se repite el entrenamiento inicial`.
 - `GET /modelo` → `{"nombre":"novamercado-ventas","alias":"vigente","version":"1"}`, y la predicción de la tienda 5 respondió las 12 familias en menos de 0.5 s.
+
+## D-010: contenedores y operación con un solo comando
+
+**Fecha:** 2026-11-15
+
+**Contexto:** todo el producto debe levantarse con `docker compose up` siguiendo el README, con el servicio de MLflow llamado `mlflow`, imágenes con versiones fijas y sin datos ni credenciales en las imágenes o el repositorio. Debe conservar lo que tiene al detenerse y volver a levantarse, y estar listo en menos de 10 minutos. Localmente se usa Podman en modo rootless; el equipo docente usará Docker.
+
+**Decisión:**
+
+| Servicio | Imagen | Papel |
+|---|---|---|
+| `bd-producto` | `postgres:16.10` | Base del producto (D-004), separada de la de Airflow |
+| `bd-mlflow` | `postgres:16.10` | Experimentos, runs y Registry de MLflow |
+| `mlflow` | `ghcr.io/mlflow/mlflow:v3.17.2` + `psycopg[binary]==3.3.5` | Servidor y artefactos servidos por HTTP (`--serve-artifacts`) |
+| `entrenamiento-inicial` | `novamercado:0.1.0` | Corre una vez: entrena y registra el primer modelo si no hay vigente (D-009) |
+| `api` | `novamercado:0.1.0` | El servicio del Anexo, en el puerto 8000 |
+
+- **Imagen del producto:** `python:3.12.15-slim-bookworm`, con el paquete instalado con las restricciones de Airflow 3.3.2. Corre con un usuario sin privilegios (uid 1000). Solo copia `pyproject.toml` y `src/` (`.dockerignore`).
+- **Datos:** `data/publicados/` se monta solo lectura en `/datos/publicados`.
+- **Volúmenes con nombre** para las dos bases, los artefactos de MLflow y la copia local del modelo. Sobreviven a `docker compose down` (sin `-v`), funcionan igual en Docker y en Podman, y PostgreSQL no sufre los problemas de permisos y `fsync` de una carpeta de Windows montada en la VM. Además, OneDrive no intenta sincronizar los archivos de las bases.
+- **Credenciales:** cada variable tiene un valor por defecto en el compose (`${VARIABLE:-valor}`), así `docker compose up` funciona sin un `.env`. `.env.example` las documenta, y un `.env` real nunca entra al repositorio.
+- **Puertos en la máquina:** 8000 (API) y 5000 (interfaz de MLflow, para la evidencia). Las bases solo son accesibles dentro de la red del compose.
+- **MLflow 3** rechaza los `Host` que no conoce (protección contra DNS rebinding). Se permiten `mlflow:5000`, el nombre en la red, y `localhost` / `127.0.0.1`, sin desactivar la protección.
+- **Ejecutor de trabajos de MLflow 3** (evaluación de GenAI): desactivado con `MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`. No se usa, y ocupaba ~2 GB y una CPU; el servidor bajó a ~590 MB. Se usan 2 workers.
+- **Orden de arranque:** la API depende de que `bd-producto` esté sana, pero no de MLflow: arranca y carga el modelo cuando aparece el alias. `entrenamiento-inicial` espera a `bd-producto` y a `mlflow` sanos.
+
+**Alternativas:**
+
+| Alternativa | En contra |
+|---|---|
+| Carpetas de Lab 2 como volúmenes | PostgreSQL falla por permisos y `fsync` sobre la carpeta montada en la VM rootless, y OneDrive sincronizaría la base |
+| Una sola base para el producto y MLflow | Acopla ambos servicios: reiniciar uno afecta al otro |
+| Exigir un `.env` | Un paso manual más para el equipo docente |
+| `--disable-security-middleware` en MLflow | La propia ayuda de MLflow lo marca como peligroso |
+| `psycopg2` en la imagen de MLflow | MLflow 3.17 usa el dialecto de psycopg 3: el servidor no arrancaba |
+
+**Verificación** con Podman 6.1.4 rootless y Docker Compose v5.6.1:
+
+| Prueba | Resultado | Límite del enunciado |
+|---|---|---|
+| Desde cero (`down -v`, `up -d`, imágenes ya construidas) | `/health = ok` en **47 s**; v1 `Primer modelo. Costo en validación 90 556 vs 134 234 del baseline` | 10 min |
+| Detener y volver a levantar sin borrar volúmenes | `ok` en 20 s; `Ya hay un modelo vigente (v1)`; las solicitudes siguen guardadas; el reenvío de la observación da `registros_guardados = 0` | Conservar sin repetir |
+| Detener `mlflow` | `/health = degradado` en 0.1 s; la predicción sigue respondiendo con la v1 | < 1 min |
+| Volver a iniciar `mlflow` | `/health = ok` en 5.2 s | < 2 min |
+| Reiniciar la API con `mlflow` detenido | Arranca con la copia local (v1), `degradado`, y predice | — |
+| Reentrenamiento manual con los mismos datos | 16 s; `No supera al vigente. Costo en validación 90 556 vs 90 556 del vigente`; la v2 queda registrada sin alias | 10 min, sin afectar al vigente |
