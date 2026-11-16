@@ -47,6 +47,7 @@ from novamercado.persistencia import (
     crear_motor,
     leer_observaciones,
 )
+from novamercado.orquestador import AirflowNoDisponible, ClienteAirflow, EstadoDagRun
 from novamercado.prediccion import ModeloVigente, PredictorVentas
 from novamercado.registro_modelos import cargar_version, verificar_servidor, version_vigente
 
@@ -81,6 +82,14 @@ class Registro(Protocol):
 
     def observacion(self, cuerpo: Any, resultado: Resultado[SolicitudObservacion]) -> int: ...
 
+    def reentrenamiento(self, id: str) -> dict[str, Any] | None: ...
+
+
+class Orquestador(Protocol):
+    def disparar(self) -> str: ...
+
+    def estado(self, id: str) -> EstadoDagRun | None: ...
+
 
 @dataclass(frozen=True)
 class Dependencias:
@@ -90,6 +99,7 @@ class Dependencias:
     predictor: Callable[[], Predictor | None]
     # Nombre de la dependencia -> función que lanza una excepción si no está disponible.
     chequeos: Mapping[str, Callable[[], None]] = field(default_factory=dict)
+    orquestador: Orquestador | None = None
 
 
 def crear_app(dependencias: Dependencias) -> FastAPI:
@@ -122,7 +132,62 @@ def crear_app(dependencias: Dependencias) -> FastAPI:
             return JSONResponse({"estado": "degradado", "motivo": "; ".join(fallas)})
         return JSONResponse({"estado": "ok"})
 
+    @app.post("/admin/reentrenar")
+    def reentrenar() -> JSONResponse:
+        try:
+            if dependencias.orquestador is None:
+                raise AirflowNoDisponible("no hay orquestador configurado")
+            id = dependencias.orquestador.disparar()
+        except AirflowNoDisponible as error:
+            log.warning("No se pudo iniciar el reentrenamiento: %s", error)
+            return _error(503, f"No se pudo iniciar el reentrenamiento: {error}")
+        return JSONResponse({"id": id}, status_code=202)
+
+    @app.get("/admin/reentrenar/{id}")
+    def estado_reentrenamiento(id: str) -> JSONResponse:
+        return _estado_reentrenamiento(dependencias, id)
+
     return app
+
+
+def _estado_reentrenamiento(dependencias: Dependencias, id: str) -> JSONResponse:
+    """Une el resultado que el DAG dejó en la base con el estado que informa Airflow (D-011)."""
+    try:
+        resultado = dependencias.registro.reentrenamiento(id)
+    except SQLAlchemyError:
+        log.exception("No se pudo leer el resultado del reentrenamiento %s", id)
+        resultado = None
+    predictor = dependencias.predictor()
+    version_cargada = predictor.version if predictor else None
+    # El DAG escribe el resultado al terminar su trabajo: si existe, la ejecución ya terminó.
+    if resultado is not None:
+        return JSONResponse(
+            {
+                "estado": resultado["estado"],
+                "promovido": resultado["promovido"],
+                # Vacía si MLflow no respondió al registrar un fallo: la vigente es la que tiene la API.
+                "version": resultado["version"] or version_cargada,
+                "motivo": resultado["motivo"],
+            }
+        )
+
+    try:
+        estado = dependencias.orquestador.estado(id) if dependencias.orquestador else None
+    except AirflowNoDisponible as error:
+        return _error(503, f"No se pudo consultar el reentrenamiento: {error}")
+    if estado is None:
+        return _error(404, f"No existe el reentrenamiento {id}")
+    if estado == "en_curso":
+        return JSONResponse({"estado": "en_curso"})
+    # Terminó sin dejar resultado (por ejemplo, Airflow cortó la tarea): no pudo mover el alias.
+    return JSONResponse(
+        {
+            "estado": "fallido",
+            "promovido": False,
+            "version": version_cargada,
+            "motivo": "La ejecución terminó sin registrar un resultado; el modelo vigente no cambió",
+        }
+    )
 
 
 def _atender_prediccion(dependencias: Dependencias, cuerpo: Any) -> JSONResponse:
@@ -236,11 +301,17 @@ def app_desde_entorno() -> FastAPI:
     )
     vigente.iniciar()
     threading.Thread(target=vigente.vigilar, args=(threading.Event(),), daemon=True, name="modelo-vigente").start()
+    airflow = ClienteAirflow.desde_entorno()
     return crear_app(
         Dependencias(
             referencia=Referencia(catalogos, maximos_historicos(historico)),
             registro=registro,
             predictor=vigente,
-            chequeos={"base de datos": registro.verificar, "MLflow": lambda: verificar_servidor(tracking_uri)},
+            chequeos={
+                "base de datos": registro.verificar,
+                "MLflow": lambda: verificar_servidor(tracking_uri),
+                "Airflow": airflow.verificar,
+            },
+            orquestador=airflow,
         )
     )
