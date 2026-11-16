@@ -63,7 +63,7 @@ Cada requerimiento del enunciado, dónde está implementado y cómo se verificó
 | Imágenes con versiones fijas | `python:3.12.15-slim-bookworm`, `postgres:16.10`, `mlflow:v3.17.2`, `airflow:3.3.2` | `Containerfile*`, `compose.yaml` |
 | Datos y credenciales fuera de las imágenes y del repositorio; `.env.example` | `.dockerignore`, `.gitignore`, `${VAR:?}` sin valores por defecto (D-010) | Sin `.env`, compose se detiene |
 | La API responde aunque MLflow no esté; `/health` lo refleja en < 1 min y vuelve en < 2 min | Copia local del modelo y chequeo directo de MLflow (D-009) | Local: 0.1 s y 5.2 s; CI: paso «Interrupción temporal de MLflow» |
-| Listo en ≤ 10 minutos; cada reentrenamiento en ≤ 10 minutos | — | Desde cero: 62–87 s; reentrenamiento: 20–25 s |
+| Listo en ≤ 10 minutos; cada reentrenamiento en ≤ 10 minutos | — | Desde cero: 62–87 s; reentrenamiento: 15–28 s ([airflow.md](evidencia/airflow.md)) |
 
 ## 6. Documentación y decisiones
 
