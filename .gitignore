@@ -38,3 +38,6 @@ Thumbs.db
 desktop.ini
 .vscode/
 .idea/
+
+# Detalle de la simulación: ventas simuladas a partir de los datos publicados (no van en el repositorio)
+docs/evidencia/*.csv
