@@ -175,7 +175,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 | Situación | Respuesta | Se registra como |
 |---|---|---|
 | Solicitud aceptada | 200 según el Anexo | `ok`, `corregido` o `advertencia` |
-| Datos que no se pueden atender (D-003), cuerpo vacío o JSON inválido (incluidos `NaN`, `Infinity` y el anidado sin límite, que hace fallar a `json.loads` con `RecursionError`) | 422 con `detail` en texto | `rechazada` |
+| Datos que no se pueden atender (D-003), cuerpo vacío o JSON inválido (incluidos `NaN` e `Infinity`), o cuerpo que anida más de 32 niveles | 422 con `detail` en texto | `rechazada` |
 | Sin modelo cargado (`/v1/prediccion`, `/modelo`) | 503 con `detail` | `no_atendida` |
 | El modelo falla al predecir | 503 con `detail` | `no_atendida` |
 | La base del producto no permite registrar | 503 con `detail`: no se responde sin registrar | — |
@@ -187,6 +187,7 @@ La limpieza vive en `novamercado.limpieza` y no usa el reloj del sistema. Los mo
 - Los endpoints leen el cuerpo crudo y delegan en `novamercado.limpieza`, así el mismo 422 con `detail` en texto cubre tanto el JSON inválido como los datos defectuosos, y la solicitud cruda siempre queda guardada.
 - El carácter NUL se reemplaza en todo el texto que viene de la solicitud (cuerpo, correcciones, motivo y campos ignorados), porque PostgreSQL no lo admite en `TEXT` ni en `JSONB`.
 - **Robustez ante problemas fuera del catálogo** (`tests/test_robustez.py`): miles de solicitudes deformadas al azar, con semilla fija, contra la limpieza, la API y PostgreSQL. La limpieza solo puede reparar, advertir o rechazar, y la API solo puede responder 200 o 422 por los datos. Esta prueba encontró tres fallas que ya están corregidas: el JSON anidado sin límite (500), el NUL dentro de las correcciones (503) y los enteros fuera de rango (503).
+- **Profundidad máxima de 32 niveles** (una solicitud válida tiene 3), medida sin recursión. En Windows `json.loads` corta los cuerpos de miles de niveles con `RecursionError`, pero en Linux los lee, y después recorrerlos o guardarlos agotaba la pila; el límite hace que el resultado no dependa de la plataforma. El CI en Linux lo detectó.
 - Las observaciones no necesitan modelo: se atienden aunque no haya ninguno cargado.
 - Las dependencias se instalan con las restricciones de Airflow 3.3.2 (`--constraint`), que fijan también las transitivas.
 
