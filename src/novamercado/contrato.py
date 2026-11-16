@@ -110,6 +110,30 @@ class RespuestaObservacion(BaseModel):
 
 
 class Rechazo(BaseModel):
-    """Cuerpo de una respuesta 422."""
+    """Cuerpo de una respuesta 4xx o 503: el motivo en texto."""
 
     detail: str
+
+
+class RespuestaModelo(BaseModel):
+    nombre: str
+    alias: str
+    version: str
+
+
+class RespuestaSalud(BaseModel):
+    estado: Literal["ok", "degradado"]
+    # Solo cuando el estado es degradado: qué dependencia falla.
+    motivo: str | None = None
+
+
+class RespuestaDisparo(BaseModel):
+    id: str
+
+
+class EstadoReentrenamiento(BaseModel):
+    estado: Literal["en_curso", "exitoso", "fallido"]
+    # Solo cuando la ejecución terminó.
+    promovido: bool | None = None
+    version: str | None = None
+    motivo: str | None = None

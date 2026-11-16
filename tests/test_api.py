@@ -426,3 +426,27 @@ def test_api_con_postgres_guarda_y_es_idempotente(referencia, observacion, predi
     assert api.post("/v1/prediccion", content="{roto", headers={"Content-Type": "application/json"}).status_code == 422
     assert api.get("/health").json() == {"estado": "ok"}
     motor.dispose()
+
+
+# Documentación del contrato (/openapi.json)
+
+
+def test_la_documentacion_publica_el_contrato_del_anexo(referencia):
+    api, _ = cliente(referencia)
+    esquema = api.get("/openapi.json").json()
+    rutas, componentes = esquema["paths"], esquema["components"]["schemas"]
+
+    def cuerpo(ruta):
+        return rutas[ruta]["post"]["requestBody"]["content"]["application/json"]["schema"]
+
+    assert set(cuerpo("/v1/prediccion")["properties"]) == {"tienda_id", "fecha", "familias"}
+    assert set(cuerpo("/v1/observaciones")["properties"]) == {"tienda_id", "fecha", "ventas"}
+    assert {"200", "422", "503"} <= set(rutas["/v1/prediccion"]["post"]["responses"])
+    assert set(rutas["/admin/reentrenar"]["post"]["responses"]) == {"202", "503"}
+    assert {"200", "404", "503"} <= set(rutas["/admin/reentrenar/{id}"]["get"]["responses"])
+    assert set(componentes["RespuestaPrediccion"]["properties"]) == {"tienda_id", "fecha", "version_modelo", "predicciones", "calidad"}
+    assert set(componentes["PrediccionFamilia"]["properties"]) == {"familia_id", "venta_esperada", "cantidad_sugerida"}
+    assert set(componentes["RespuestaObservacion"]["properties"]) == {"registros_guardados", "calidad"}
+    assert set(componentes["RespuestaModelo"]["properties"]) == {"nombre", "alias", "version"}
+    assert set(componentes["EstadoReentrenamiento"]["properties"]) == {"estado", "promovido", "version", "motivo"}
+    assert componentes["Rechazo"]["required"] == ["detail"]
