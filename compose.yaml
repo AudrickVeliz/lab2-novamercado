@@ -1,0 +1,128 @@
+# Producto completo (ver D-010). Funciona sin cambios en Docker y en Podman rootless, y sin un
+# archivo .env: cada variable tiene un valor por defecto y .env.example documenta cómo cambiarla.
+#
+#   docker compose up -d --build
+#
+# Los archivos publicados se colocan en data/publicados/ antes de levantar.
+name: novamercado
+
+x-producto: &producto
+  image: localhost/novamercado:0.1.0
+  build:
+    context: .
+    # Docker solo detecta "Dockerfile" por sí solo: el nombre debe indicarse.
+    dockerfile: Containerfile
+  environment: &entorno-producto
+    NOVAMERCADO_DATOS: /datos/publicados
+    NOVAMERCADO_BD_URL: postgresql+psycopg://${NOVAMERCADO_BD_USUARIO:-novamercado}:${NOVAMERCADO_BD_CLAVE:-novamercado}@bd-producto:5432/novamercado
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_DISABLE_AGENT_HINT: "1"
+  volumes:
+    - ./data/publicados:/datos/publicados:ro
+
+services:
+  # Base del producto: solicitudes, predicciones, correcciones y observaciones (D-004).
+  bd-producto:
+    image: docker.io/library/postgres:16.10
+    environment:
+      POSTGRES_USER: ${NOVAMERCADO_BD_USUARIO:-novamercado}
+      POSTGRES_PASSWORD: ${NOVAMERCADO_BD_CLAVE:-novamercado}
+      POSTGRES_DB: novamercado
+    volumes:
+      - bd-producto:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d novamercado"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # Base de MLflow: experimentos, runs y Model Registry. Separada de la del producto.
+  bd-mlflow:
+    image: docker.io/library/postgres:16.10
+    environment:
+      POSTGRES_USER: ${MLFLOW_BD_USUARIO:-mlflow}
+      POSTGRES_PASSWORD: ${MLFLOW_BD_CLAVE:-mlflow}
+      POSTGRES_DB: mlflow
+    volumes:
+      - bd-mlflow:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d mlflow"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  mlflow:
+    image: localhost/novamercado-mlflow:3.17.2
+    build:
+      context: .
+      dockerfile: Containerfile.mlflow
+    command:
+      - mlflow
+      - server
+      - --host=0.0.0.0
+      - --port=5000
+      - --backend-store-uri=postgresql+psycopg://${MLFLOW_BD_USUARIO:-mlflow}:${MLFLOW_BD_CLAVE:-mlflow}@bd-mlflow:5432/mlflow
+      # Los artefactos los guarda y sirve el propio servidor: los clientes no comparten carpetas.
+      - --serve-artifacts
+      - --artifacts-destination=/mlflow/artefactos
+      # MLflow 3 rechaza los Host que no conoce (protección contra DNS rebinding): se agregan el
+      # nombre del servicio en la red del compose y el acceso desde la máquina, sin desactivarla.
+      - --allowed-hosts=mlflow,mlflow:5000,localhost,localhost:5000,127.0.0.1,127.0.0.1:5000
+      - --workers=2
+    environment:
+      # El ejecutor de trabajos de MLflow 3 (evaluación de GenAI) no se usa y ocupa ~2 GB y una CPU.
+      MLFLOW_SERVER_ENABLE_JOB_EXECUTION: "false"
+    ports:
+      - "5000:5000"
+    volumes:
+      - artefactos-mlflow:/mlflow/artefactos
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=3)"]
+      interval: 10s
+      retries: 30
+      start_period: 20s
+    depends_on:
+      bd-mlflow:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Corre una vez: si no hay modelo vigente entrena y registra el primero; si ya hay, termina (D-009).
+  entrenamiento-inicial:
+    <<: *producto
+    command: ["python", "-m", "novamercado.reentrenamiento", "--inicial"]
+    depends_on:
+      bd-producto:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *producto
+    environment:
+      <<: *entorno-producto
+      NOVAMERCADO_COPIA_MODELO: /var/lib/novamercado/modelo/vigente.joblib
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data/publicados:/datos/publicados:ro
+      - copia-modelo:/var/lib/novamercado/modelo
+    healthcheck:
+      # 200 con estado ok o degradado; 503 mientras no haya modelo.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 15s
+      retries: 40
+      start_period: 30s
+    depends_on:
+      bd-producto:
+        condition: service_healthy
+      # La API arranca aunque MLflow no esté listo: carga el modelo cuando aparezca.
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  bd-producto:
+  bd-mlflow:
+  artefactos-mlflow:
+  copia-modelo:
